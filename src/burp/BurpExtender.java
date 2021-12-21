@@ -501,7 +501,6 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         IParameter requesturiParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "request_uri");
         IParameter nonceParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "nonce");
 
-
         // First check if request belongs to a OpenID Flow
         Boolean isOpenID = false;
         Boolean foundRefresh = false;
@@ -510,7 +509,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                 isOpenID = true;
             }
         } else if (resptypeParameter!=null) {
-            if (resptypeParameter.getValue().contains("id_token") || resptypeParameter.getValue().equals("code token")) {
+            if (helpers.urlDecode(resptypeParameter.getValue()).contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).equals("code token")) {
                 isOpenID = true;
             }
         } 
@@ -548,12 +547,42 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 "OpenID Misconfiguration - Weak Nonce Parameter (insufficient entropy)",
                                 "The OpenID Flow presents a security misconfiguration, because the Authorization Server accepts weak "
                                 +"the <code>nonce</code> parameter values.\n\n "
-                                +"In details the OpenID Flow request contains a <code>nonce</code> value of: <b>"+nonceValue+"</b>.\n\n"
+                                +"In details the OpenID Flow request contains a <code>nonce</code> value of <b>"+nonceValue+"</b>.\n\n"
                                 +"Based on OpenID specifications the <code>nonce</code> parameter is used to associate a Client session "
                                 +"with an ID Token, and to mitigate replay attacks. For these reasons it should be unpredictable and unique "
                                 +"per client session.\n Since the <code>nonce</code> value is guessable (insufficient entropy) "
                                 +"then the attack surface of the OpenID service increases.\n",
-                                "Medium",
+                                "Low",
+                                "Firm"
+                            )
+                        );
+                }
+            }
+
+            // Check for weak OpenID state values (i.e. insufficient length, only alphabetic, only numeric, etc.)
+            if (stateParameter!=null) {
+                String stateValue = stateParameter.getValue();
+                if ( (stateValue.length() < 5) || ( (stateValue.length() < 7) & ((stateValue.matches("[a-zA-Z]+")) || (stateValue.matches("[0-9]+")))) ) {
+                    List<int[]> requestHighlights = new ArrayList<>(1);
+                    int[] nonceOffset = new int[2];
+                    int nonceStart = requestString.indexOf(stateValue);
+                    nonceOffset[0] = nonceStart;
+                    nonceOffset[1] = nonceStart+stateValue.length();
+                    requestHighlights.add(nonceOffset);
+                    issues.add(
+                            new CustomScanIssue(
+                                baseRequestResponse.getHttpService(),
+                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                "OpenID Misconfiguration - Weak State Parameter (insufficient entropy)",
+                                "The OpenID Flow presents a security misconfiguration because is using weak values for"
+                                +"the <code>state</code> parameter.\n\n "
+                                +"In details the OpenID Flow request contains a <code>state</code> value of <b>"+stateValue+"</b>.\n\n"
+                                +"Based on OpenID specifications the <code>state</code> parameter should be used to maintain state between "
+                                +"the request and the callback, and to mitigate CSRF attacks. For these reasons its value should be unpredictable and unique "
+                                +"for each authorization request.\nSince the <code>state</code> value is guessable (insufficient entropy) "
+                                +"then the attack surface of the OpenID service increases.\n",
+                                "Low",
                                 "Firm"
                             )
                         );
@@ -676,7 +705,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
 
                     // Retrieving codes from OpenID Hybrid Flow responses body or Location header
                     if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
-                        // Enumerate OPenID authorization codes returned by HTTP responses
+                        // Enumerate OpenID authorization codes returned by HTTP responses
                         dateCode = getHttpHeaderValueFromList(respHeaders, "Date");
                         if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
                             // This is needed to avoid null values on GOTCODES
@@ -785,7 +814,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                     }
                     // Retrieving codes from OpenID Authorization Code Flow responses body or Location header
                     if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
-                        // Enumerate OPenID authorization codes returned by HTTP responses
+                        // Enumerate OpenID authorization codes returned by HTTP responses
                         dateCode = getHttpHeaderValueFromList(respHeaders, "Date");
                         if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
                             // This is needed to avoid null values on GOTCODES
@@ -833,7 +862,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 baseRequestResponse.getHttpService(),
                                 helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                 new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                "OpenID Authorization Code Flow without CSRF protection",
+                                "OpenID Misconfiguration - Missing State Parameter on Authorization Code Flow",
                                 "The Authorization Code Flow login request does not have the <code>state</code> parameter.\n\n"
                                 +"The use of a unpredictable and unique (per user's session) <code>state</code> parameter value, "
                                 +"provides a protection against CSRF attacks (as an anti-CSRF token) during OpenID Authorization Code Flow login procedure",
@@ -849,7 +878,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 baseRequestResponse.getHttpService(),
                                 helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                 new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                "OpenID Authorization Code Flow without PKCE protection",
+                                "OpenID Misconfiguration - Authorization Code Flow without PKCE Protection",
                                 "The Authorization Code Flow login request does not have the <code>code_challenge</code> parameter, "
                                 +"then is not implemented with PKCE protections against authorization code interception.\n\n"
                                 +"The Authorization Code with PKCE provides protection against authorization code interception attacks, "
@@ -897,6 +926,37 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                     respType = resptypeParameter.getValue();
                     redirUri = redirParameter.getValue();
                 }
+
+
+            // Check for weak OAUTHv2 state values (i.e. insufficient length, only alphabetic, only numeric, etc.)
+            if (stateParameter!=null) {
+                String stateValue = stateParameter.getValue();
+                if ( (stateValue.length() < 5) || ( (stateValue.length() < 7) & ((stateValue.matches("[a-zA-Z]+")) || (stateValue.matches("[0-9]+")))) ) {
+                    List<int[]> requestHighlights = new ArrayList<>(1);
+                    int[] nonceOffset = new int[2];
+                    int nonceStart = requestString.indexOf(stateValue);
+                    nonceOffset[0] = nonceStart;
+                    nonceOffset[1] = nonceStart+stateValue.length();
+                    requestHighlights.add(nonceOffset);
+                    issues.add(
+                            new CustomScanIssue(
+                                baseRequestResponse.getHttpService(),
+                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                "OAUTHv2 Misconfiguration - Weak State Parameter (insufficient entropy)",
+                                "The OAUTHv2 Flow presents a security misconfiguration because is using weak values for"
+                                +"the <code>state</code> parameter.\n\n "
+                                +"In details the OAUTHv2 Flow request contains a <code>state</code> value of <b>"+stateValue+"</b>.\n\n"
+                                +"Based on OAUTHv2 specifications the <code>state</code> parameter should be used to maintain state between "
+                                +"the request and the callback, and to mitigate CSRF attacks. For these reasons its value should be unpredictable and unique "
+                                +"for each authorization request.\nSince the <code>state</code> value is guessable (insufficient entropy) "
+                                +"then the attack surface of the OAUTHv2 service increases.\n",
+                                "Low",
+                                "Firm"
+                            )
+                        );
+                }
+            }
 
                 // Checking for OAUTHv2 Implicit Flow
                 if (respType.equals("token")) {
@@ -1042,7 +1102,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 baseRequestResponse.getHttpService(),
                                 helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                 new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                "OAUTHv2 Authorization Code Flow without CSRF Protection",
+                                "OAUTHv2 Misconfiguration - Missing State Parameter on Authorization Code Flow",
                                 "The Authorization Code Flow login request does not have the <code>state</code> parameter.\n\n"
                                 +"The use of a unpredictable and unique (per user's session) <code>state</code> parameter value, "
                                 +"provides a protection against CSRF attacks (as an anti-CSRF token) during Authorization Code Flow login procedure",
@@ -1058,7 +1118,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 baseRequestResponse.getHttpService(),
                                 helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                 new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                "OAUTHv2 Authorization Code Flow without PKCE Protection",
+                                "OAUTHv2 Misconfiguration - Authorization Code Flow without PKCE Protection",
                                 "The Authorization Code Flow login request does not have the <code>code_challenge</code> parameter, "
                                 +"then is not implemented with PKCE protections against authorization code interception.\n\n"
                                 +"The Authorization Code with PKCE provides protection against authorization code interception attacks, "
@@ -1411,7 +1471,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                         requestHighlights.add(payloadOffset);
                         if (hostheaderCheck) {
                             if (scopeParameter!=null) { 
-                                if (scopeParameter.getValue().contains("openid") || resptypeParameter.getValue().contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).equals("code token")) {
+                                if (scopeParameter.getValue().contains("openid") || helpers.urlDecode(resptypeParameter.getValue()).contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).equals("code token")) {
                                     issues.add(new CustomScanIssue(
                                         baseRequestResponse.getHttpService(),
                                         helpers.analyzeRequest(baseRequestResponse).getUrl(), 
@@ -1455,7 +1515,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                             }
                         } else {
                             if (scopeParameter!=null) {
-                                if (scopeParameter.getValue().contains("openid") || resptypeParameter.getValue().contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).equals("code token")) {
+                                if (scopeParameter.getValue().contains("openid") || helpers.urlDecode(resptypeParameter.getValue()).contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).equals("code token")) {
                                     issues.add(new CustomScanIssue(
                                         baseRequestResponse.getHttpService(),
                                         helpers.analyzeRequest(baseRequestResponse).getUrl(), 
@@ -1525,7 +1585,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         IParameter clientIdParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "client_id");
         // This check consists in re-sending a new OAUTHv2/OpenID authorization code request to obtain a new code then add the malicious 'scope' value to the token request
         if (clientIdParameter!=null & resptypeParameter!=null) {
-            if (resptypeParameter.getValue().contains("id_token") || resptypeParameter.getValue().contains("code")) {
+            if (helpers.urlDecode(resptypeParameter.getValue()).contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).contains("code")) {
                 if (insertionPoint.getInsertionPointName().equals("response_type")) {   // Forcing to perform only a tentative (unique insertion point)
                     stdout.println("[+] Active Scan: Checking for Input Validation Issues on Scope parameter in token requests");
                     // Iterating for each scope payload
@@ -1541,7 +1601,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                         String checkResponseStr_code = helpers.bytesToString(checkResponse_code);
                         // For OpenID the code requests could be sent in Authorization Code or Hybrid Flows
                         if (resptypeParameter!=null) {
-                            if (resptypeParameter.getValue().contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).equals("code token")) {
+                            if (helpers.urlDecode(resptypeParameter.getValue()).contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).equals("code token")) {
                                 // Detected an OpenID Flow
                                 isOpenID = true;
                             }
@@ -1775,7 +1835,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         IParameter scopeParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "scope");
         IParameter nonceParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "nonce");
         if (clientIdParameter!=null & resptypeParameter!=null & scopeParameter!=null & nonceParameter!=null) {
-            if (scopeParameter.getValue().contains("openid") || resptypeParameter.getValue().contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).equals("code token")) {
+            if (scopeParameter.getValue().contains("openid") || helpers.urlDecode(resptypeParameter.getValue()).contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).equals("code token")) {
                 // Checking only on OpenID Flows because only their authorization requests could be affected
                 String nonceValue = nonceParameter.getValue();
                 byte[] originalResponse = baseRequestResponse.getResponse();
@@ -1823,11 +1883,11 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                     +"The Authorization Server accepted a request with an already used <code>nonce</code> value\n <b>"+ nonceValue +"</b> "
                                     +"and a new secret token (or authorization code) was released on response.\n\n"
                                     +"Based on OpenID specifications the <code>nonce</code> parameter is used to associate a Client session "
-                                    +"with an ID Token, and to mitigate replay attacks. For these reasons it should be unpredictable and unique "
+                                    +"with an ID Token, and to mitigate replay attacks. For these reasons its value should be unpredictable and unique "
                                     +"per client session.\nSince the <code>nonce</code> value is guessable (duplicate values accepted) "
                                     +"then the attack surface of the OpenID service increases.\n",
-                                    "Medium",
-                                    "Firm"
+                                    "Low",
+                                    "Certain"
                                 )
                             );
                         }
@@ -1838,6 +1898,108 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         return issues;
     }
 
+
+
+
+
+    public List<IScanIssue> stateScan(IHttpRequestResponse baseRequestResponse, IScannerInsertionPoint insertionPoint) {
+        // Scan for state duplicate replay issues on requests of OAUTHv2 and OpenID Flows (Implicit, Authorization Code and Hybrid)
+        List<IScanIssue> issues = new ArrayList<>();
+        int[] payloadOffset = new int[2];
+        String checkRequestStr;
+        IResponseVariations respVariations = null;
+        Boolean respDiffers = false;
+        IParameter clientIdParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "client_id");
+        IParameter resptypeParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "response_type");
+        IParameter scopeParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "scope");
+        IParameter stateParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "state");
+        if (clientIdParameter!=null & resptypeParameter!=null & scopeParameter!=null & stateParameter!=null) {
+            if (resptypeParameter.getValue().equals("token") || helpers.urlDecode(resptypeParameter.getValue()).contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).contains("code")) {
+                // Checking for all requests having the state parameter
+                String stateValue = stateParameter.getValue();
+                byte[] originalResponse = baseRequestResponse.getResponse();
+                String originalResponseStr = helpers.bytesToString(originalResponse);
+                IResponseInfo originalRespInfo = helpers.analyzeResponse(originalResponse);
+                if (insertionPoint.getInsertionPointName().equals("state")) {   // Forcing to perform only a tentative (unique insertion point)
+                    stdout.println("[+] Active Scan: Checking for Duplicate State values on OAUTHv2/OpenID requests");
+                    // Build the request to replay the state value
+                    byte[] checkRequest = baseRequestResponse.getRequest();
+                    IHttpRequestResponse checkRequestResponse = callbacks.makeHttpRequest(baseRequestResponse.getHttpService(), checkRequest);
+                    checkRequestStr = helpers.bytesToString(checkRequest);
+                    byte [] checkResponse = checkRequestResponse.getResponse();
+                    String checkResponseStr = helpers.bytesToString(checkResponse);
+                    IResponseInfo checkRespInfo = helpers.analyzeResponse(checkResponse);
+                    // Checking if the replayed state response was successful
+                    if (checkRespInfo.getStatusCode() == originalRespInfo.getStatusCode()) {
+                        respVariations = helpers.analyzeResponseVariations(baseRequestResponse.getResponse(), checkRequestResponse.getResponse());
+                        List <String> responseChanges = respVariations.getVariantAttributes();
+                        for (String change : responseChanges) {
+                            if (change.equals("status_code") || change.equals("page_title")) {
+                                respDiffers = true;
+                            } else if (change.equals("whole_body_content") || change.equals("limited_body_content")) {
+                                // If response body differs but neither contains a error message and also both contains a token or a authorization code then respDiffers remain False
+                                if ( (checkResponseStr.toLowerCase().contains("error") & (!originalResponseStr.toLowerCase().contains("error"))) & 
+                                (((!checkResponseStr.toLowerCase().contains("code")) & (originalResponseStr.toLowerCase().contains("code"))) || 
+                                ((!checkResponseStr.toLowerCase().contains("token")) & (originalResponseStr.toLowerCase().contains("token")))) ) {
+                                    respDiffers = true;
+                                }
+                            } 
+                        }
+                        if (!respDiffers) {
+                            List<int[]> requestHighlights = new ArrayList<>(1);
+                            int payloadStart = checkRequestStr.indexOf(stateValue);
+                            payloadOffset[0] = payloadStart;
+                            payloadOffset[1] = payloadStart+stateValue.length();
+                            requestHighlights.add(payloadOffset);
+                            if (scopeParameter!=null) {
+                                if (scopeParameter.getValue().equals("openid") || helpers.urlDecode(resptypeParameter.getValue()).contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).contains("code token")) {
+                                    // Found OpenID state duplicate issue
+                                    issues.add(
+                                        new CustomScanIssue(
+                                            baseRequestResponse.getHttpService(),
+                                            helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                            new IHttpRequestResponse[] {callbacks.applyMarkers(baseRequestResponse, requestHighlights, null), callbacks.applyMarkers(checkRequestResponse, requestHighlights, null) },
+                                            "OpenID Misconfiguration - Weak State Parameter (duplicate values)",
+                                            "The OpenID Flow presents a security misconfiguration in handling the <code>state</code> parameter on login requests.\n\n"
+                                            +"The Authorization Server accepted a request with an already used <code>state</code> value\n <b>"+ stateValue +"</b> "
+                                            +"and a new secret token (or authorization code) was released on response.\n\n"
+                                            +"Based on OpenID specifications the <code>state</code> parameter should be used to maintain state between "
+                                            +"the request and the callback, and to mitigate CSRF attacks. For these reasons its value should be unpredictable and unique "
+                                            +"for each authorization request.\nSince the <code>state</code> value is guessable (duplicate values accepted) "
+                                            +"then the attack surface of the OpenID service increases.\n",
+                                            "Low",
+                                            "Certain"
+                                        )
+                                    );
+                                }
+                            } else {
+                                // Found OAUTHv2 state duplicate issue
+                                issues.add(
+                                    new CustomScanIssue(
+                                        baseRequestResponse.getHttpService(),
+                                        helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                        new IHttpRequestResponse[] {callbacks.applyMarkers(baseRequestResponse, requestHighlights, null), callbacks.applyMarkers(checkRequestResponse, requestHighlights, null) },
+                                        "OAUTHv2 Misconfiguration - Weak State Parameter (duplicate values)",
+                                        "The OAUTHv2 Flow presents a security misconfiguration in handling the <code>state</code> parameter on login requests.\n\n"
+                                        +"The Authorization Server accepted a request with an already used <code>state</code> value\n <b>"+ stateValue +"</b> "
+                                        +"and a new secret token (or authorization code) was released on response.\n\n"
+                                        +"Based on OAUTHv2 specifications the <code>state</code> parameter should be used to maintain state between "
+                                        +"the request and the callback, and to mitigate CSRF attacks. For these reasons its value should be unpredictable and unique "
+                                        +"for each authorization request.\nSince the <code>state</code> value is guessable (duplicate values accepted) "
+                                        +"then the attack surface of the OAUTHv2 service increases.\n",
+                                        "Low",
+                                        "Certain"
+                                    )
+                                );
+                            }
+
+                        }
+                    }
+                }
+            }
+        }
+        return issues;
+    }
 
 
 
@@ -1853,7 +2015,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         IParameter scopeParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "scope");
         IParameter clientIdParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "client_id");
         if (clientIdParameter!=null & resptypeParameter!=null & scopeParameter!=null) {
-            if (scopeParameter.getValue().contains("openid") || resptypeParameter.getValue().contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).equals("code token")) {
+            if (scopeParameter.getValue().contains("openid") || helpers.urlDecode(resptypeParameter.getValue()).contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).equals("code token")) {
                 // Checking only on OpenID Flows because only their authorization requests could be affected
                 String payload_resptypenone = "none";
                 if (insertionPoint.getInsertionPointName().equals("response_type")) {   // Forcing to perform only a tentative (unique insertion point)
@@ -1981,7 +2143,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                         payloadOffset[1] = payloadStart+payload_url.length();
                         requestHighlights.add(payloadOffset);
                         if (scopeParameter!=null || resptypeParameter!=null) {
-                            if (scopeParameter.getValue().contains("openid") || resptypeParameter.getValue().contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).equals("code token")) {
+                            if (scopeParameter.getValue().contains("openid") || helpers.urlDecode(resptypeParameter.getValue()).contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).equals("code token")) {
                                 // Found well-known url in OpenID Flow 
                                 issues.add(new CustomScanIssue(
                                     baseRequestResponse.getHttpService(),
@@ -2034,7 +2196,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         IParameter scopeParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "scope");
         IParameter clientIdParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "client_id");
         if (clientIdParameter!=null & resptypeParameter!= null & redirectUriParameter!=null) {
-            if (resptypeParameter.getValue().equals("token")|| resptypeParameter.getValue().contains("id_token")) {
+            if (resptypeParameter.getValue().equals("token")|| helpers.urlDecode(resptypeParameter.getValue()).contains("id_token")) {
                 // Checking only OAUTHv2 and OpenID implict flow request having 'redirect_uri' parameter targeting a third-party domain
                 String redirUri = redirectUriParameter.getValue();
                 String originRedirUri = getUrlOriginString(redirUri);
@@ -2087,7 +2249,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 if (!originRedirUri.isEmpty() & !originRedirUri.equals(originUrl)) {
                                     // Found dangerous OAUTHv2/OpenID Implicit Flow between different applications
                                     if (scopeParameter != null) {
-                                        if (scopeParameter.getValue().contains("openid") || resptypeParameter.getValue().contains("id_token")) {
+                                        if (scopeParameter.getValue().contains("openid") || helpers.urlDecode(resptypeParameter.getValue()).contains("id_token")) {
                                             // Found Dangerous OpeinID Implicit Flow (removing cookies)
                                             issues.add(
                                                 new CustomScanIssue(
@@ -2124,7 +2286,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 }
                                 // Found OAUTHv2/OpenID Implicit Flow vulnerable to replay attacks
                                 if (scopeParameter != null) {
-                                    if (scopeParameter.getValue().contains("openid") || resptypeParameter.getValue().contains("id_token")) {
+                                    if (scopeParameter.getValue().contains("openid") || helpers.urlDecode(resptypeParameter.getValue()).contains("id_token")) {
                                         // Found OpeinID Implicit Flow vulnerable to replay attacks (removing cookies)
                                         issues.add(new CustomScanIssue(
                                             baseRequestResponse.getHttpService(),
@@ -2179,6 +2341,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
             List<IScanIssue> scopeResults = scopeScan(baseRequestResponse, insertionPoint);
             List<IScanIssue> replayResults = replayScan(baseRequestResponse, insertionPoint);
             List<IScanIssue> nonceResults = nonceScan(baseRequestResponse, insertionPoint);
+            List<IScanIssue> stateResults = stateScan(baseRequestResponse, insertionPoint);
             List<IScanIssue> resptypeResults = resptypeScan(baseRequestResponse, insertionPoint);
             List<IScanIssue> wellknownResults = wellknownScan(baseRequestResponse, insertionPoint);
             List<IScanIssue> implicitResults = implicitScan(baseRequestResponse, insertionPoint);
@@ -2186,6 +2349,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
             issues.addAll(scopeResults);
             issues.addAll(replayResults);
             issues.addAll(nonceResults);
+            issues.addAll(stateResults);
             issues.addAll(resptypeResults);
             issues.addAll(wellknownResults);
             issues.addAll(implicitResults);
@@ -2313,7 +2477,7 @@ class CustomScanIssue implements IScanIssue
         +"values. Wherever possible, use strict byte-for-byte comparison to validate the URI in "
         +"any incoming requests. Only allow complete and exact matches rather than using pattern "
         +"matching. This prevents attackers from accessing other pages on the whitelisted "
-        +"domains.</li><li>Enforce use of the <code>state</code> parameter. Its value should also be bound "
+        +"domains.</li><li>Enforce use of the <code>state</code> parameter. Its value should be bound "
         +"to the user's session by including some unguessable, session-specific data, such "
         +"as a hash containing the session cookie. This helps protect users against CSRF-like "
         +"attacks. It also makes it much more difficult for an attacker to use any stolen "
