@@ -1,0 +1,44 @@
+// Apply the java plugin to add support for Java
+apply plugin: 'java'
+
+version '1.0'
+
+// In this section you declare where to find the dependencies of your project
+repositories {
+     mavenCentral()
+}
+
+// In this section you declare the dependencies for your production and test code
+dependencies {
+    // Add the Burp Extender interface
+    implementation group: 'net.portswigger.burp.extender', name: 'burp-extender-api', version: '2.1'
+
+}
+
+sourceSets {
+    main {
+        java {
+            srcDir 'src'
+        }
+    }
+}
+
+gradle.projectsEvaluated {
+	tasks.withType(JavaCompile) {
+		options.compilerArgs << "-Xlint:unchecked"
+	}
+}
+
+
+
+task fatJar(type: Jar) {
+	archiveBaseName = project.name + '-all'
+	from { configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) } }
+	with jar
+}
+
+
+compileJava {
+	targetCompatibility '1.8'
+	sourceCompatibility '1.8'
+}
