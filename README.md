@@ -9,6 +9,7 @@ The plugin looks for various OAUTHv2/OpenID vulnerabilities and common misconfig
   * https://datatracker.ietf.org/doc/html/rfc6749
   * https://datatracker.ietf.org/doc/html/rfc6819
   * https://datatracker.ietf.org/doc/html/rfc6750
+  * https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics-09
   * https://oauth.net/2/
   * https://openid.net/connect/
   * https://openid.net/specs/openid-connect-core-1_0.html
