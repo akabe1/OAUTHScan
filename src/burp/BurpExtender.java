@@ -243,7 +243,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         callbacks.setExtensionName(PLUGIN_NAME);
         callbacks.registerScannerInsertionPointProvider(this);
         callbacks.registerScannerCheck(this);
-        stdout.println("[+] OAUTHscan Plugin Loaded Successfully");
+        stdout.println("[+] OAUTHScan Plugin Loaded Successfully");
     }
 
 
@@ -396,8 +396,8 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
 
     @Override
     public List<IScanIssue> doPassiveScan(IHttpRequestResponse baseRequestResponse) {
-        String dateToken = "";
-        String dateCode = "";
+        //String dateToken = "";
+        //String dateCode = "";
         long currentTimeStampMillis = Instant.now().toEpochMilli();
         List<IScanIssue> issues = new ArrayList<>();
 
@@ -411,8 +411,10 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
 
         // Getting the Request URL query parameters 
         Map<String, String> reqQueryParam = new HashMap<String, String>();
-        if (reqInfo.getUrl().getQuery() != null) {
-            reqQueryParam = getQueryMap(reqInfo.getUrl().getQuery());
+        if (reqInfo.getUrl() != null) {
+            if (reqInfo.getUrl().getQuery() != null) {
+                reqQueryParam = getQueryMap(reqInfo.getUrl().getQuery());
+            }
         }
         //Map<String, String> reqQueryParam = getQueryMap(reqInfo.getUrl().getQuery());
         String reqQueryString = reqInfo.getUrl().toString();
@@ -472,7 +474,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
             }
 
             // Enumerate OAUTHv2/OpenID secret tokens returned by HTTP responses
-            dateToken = getHttpHeaderValueFromList(respHeaders, "Date");
+            String dateToken = getHttpHeaderValueFromList(respHeaders, "Date");
             if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
                 // This is needed to avoid null values on GOTTOKENS
                 dateToken = Long.toString(currentTimeStampMillis);
@@ -485,7 +487,9 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                     foundTokens.addAll(getMatchingParams(pName, pName, respBody, "link"));
                     // Remove duplicate tokens found in same request
                     foundTokens = new ArrayList<>(new HashSet<>(foundTokens));
-                    GOTTOKENS.put(dateToken, foundTokens);
+                    if (!foundTokens.isEmpty()) {
+                        GOTTOKENS.put(dateToken, foundTokens);
+                    }
                 }
             }
 
@@ -582,7 +586,9 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                     foundIdTokens.addAll(getMatchingParams(pName, pName, respBody, "link"));
                     // Remove duplicate id_tokens found in same request
                     foundIdTokens = new ArrayList<>(new HashSet<>(foundIdTokens));
-                    GOTOPENIDTOKENS.addAll(foundIdTokens);
+                    if (!foundIdTokens.isEmpty()) {
+                        GOTOPENIDTOKENS.addAll(foundIdTokens);
+                    }
                 }
             }
         
@@ -803,7 +809,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                     // Retrieving codes from OpenID Hybrid Flow responses body or Location header
                     if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
                         // Enumerate OpenID authorization codes returned by HTTP responses
-                        dateCode = getHttpHeaderValueFromList(respHeaders, "Date");
+                        String dateCode = getHttpHeaderValueFromList(respHeaders, "Date");
                         if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
                             // This is needed to avoid null values on GOTCODES
                             dateCode = Long.toString(currentTimeStampMillis);
@@ -816,7 +822,9 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 foundCodes.addAll(getMatchingParams(pName, pName, respBody, "link"));
                                 // Remove duplicate codes foud in same request
                                 foundCodes = new ArrayList<>(new HashSet<>(foundCodes));
-                                GOTCODES.put(dateCode, foundCodes);
+                                if (!foundCodes.isEmpty()) {
+                                    GOTCODES.put(dateCode, foundCodes);
+                                }
                             }
                         }
                     }
@@ -889,20 +897,22 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
 
                             // Retrieving 'state' values from OpenID Hybrid Flow responses body or Location header
                             if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
-                                // Enumerate OpenID authorization codes returned by HTTP responses
-                                dateCode = getHttpHeaderValueFromList(respHeaders, "Date");
+                                // Enumerate OpenID authorization states returned by HTTP responses
+                                String dateState = getHttpHeaderValueFromList(respHeaders, "Date");
                                 if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
                                     // This is needed to avoid null values on GOTSTATES
-                                    dateCode = Long.toString(currentTimeStampMillis);
+                                    dateState = Long.toString(currentTimeStampMillis);
                                 }
                                 List<String> foundStates = new ArrayList<>();
-                                if (! GOTSTATES.containsKey(dateCode)) {
+                                if (! GOTSTATES.containsKey(dateState)) {
                                     foundStates.addAll(getMatchingParams("state", "state", respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
                                     foundStates.addAll(getMatchingParams("state", "state", getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
                                     foundStates.addAll(getMatchingParams("state", "state", respBody, "link"));
-                                    // Remove duplicate codes foud in same request
+                                    // Remove duplicate states foud in same request
                                     foundStates = new ArrayList<>(new HashSet<>(foundStates));
-                                    GOTSTATES.put(dateCode, foundStates);
+                                    if (!foundStates.isEmpty()) {
+                                        GOTSTATES.put(dateState, foundStates);
+                                    }
                                 }
                             } else {
                                 // The response does not return the state parameter sent within the authorization request
@@ -1054,7 +1064,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                     // Retrieving codes from OpenID Authorization Code Flow responses body or Location header
                     if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
                         // Enumerate OpenID authorization codes returned by HTTP responses
-                        dateCode = getHttpHeaderValueFromList(respHeaders, "Date");
+                        String dateCode = getHttpHeaderValueFromList(respHeaders, "Date");
                         if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
                             // This is needed to avoid null values on GOTCODES
                             dateCode = Long.toString(currentTimeStampMillis);
@@ -1067,7 +1077,9 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 foundCodes.addAll(getMatchingParams(pName, pName, respBody, "link"));
                                 // Remove duplicate codes foud in same request
                                 foundCodes = new ArrayList<>(new HashSet<>(foundCodes));
-                                GOTCODES.put(dateCode, foundCodes);
+                                if (!foundCodes.isEmpty()) {
+                                    GOTCODES.put(dateCode, foundCodes);
+                                }
                             }
                         }
                     }
@@ -1142,20 +1154,22 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
 
                             // Retrieving 'state' values from OpenID Authorization Code Flow responses body or Location header
                             if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
-                                // Enumerate OpenID authorization codes returned by HTTP responses
-                                dateCode = getHttpHeaderValueFromList(respHeaders, "Date");
+                                // Enumerate OpenID authorization states returned by HTTP responses
+                                String dateState = getHttpHeaderValueFromList(respHeaders, "Date");
                                 if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
                                     // This is needed to avoid null values on GOTSTATES
-                                    dateCode = Long.toString(currentTimeStampMillis);
+                                    dateState = Long.toString(currentTimeStampMillis);
                                 }
                                 List<String> foundStates = new ArrayList<>();
-                                if (! GOTSTATES.containsKey(dateCode)) {
+                                if (! GOTSTATES.containsKey(dateState)) {
                                     foundStates.addAll(getMatchingParams("state", "state", respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
                                     foundStates.addAll(getMatchingParams("state", "state", getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
                                     foundStates.addAll(getMatchingParams("state", "state", respBody, "link"));
-                                    // Remove duplicate codes foud in same request
+                                    // Remove duplicate states foud in same request
                                     foundStates = new ArrayList<>(new HashSet<>(foundStates));
-                                    GOTSTATES.put(dateCode, foundStates);
+                                    if (!foundStates.isEmpty()) {
+                                        GOTSTATES.put(dateState, foundStates);
+                                    }
                                 }
                             } else {
                                 // The response does not return the state parameter sent within the authorization request
@@ -1440,7 +1454,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                     // Retrieving codes from OAUTHv2 Authorization Code Flow responses body or Location header
                     if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
                         // Enumerate OAUTHv2 authorization codes returned by HTTP responses
-                        dateCode = getHttpHeaderValueFromList(respHeaders, "Date");
+                        String dateCode = getHttpHeaderValueFromList(respHeaders, "Date");
                         if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
                             // This is needed to avoid null values on GOTCODES
                             dateCode = Long.toString(currentTimeStampMillis);
@@ -1453,7 +1467,9 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 foundCodes.addAll(getMatchingParams(pName, pName, respBody, "link"));
                                 // Remove duplicate codes foud in same request
                                 foundCodes = new ArrayList<>(new HashSet<>(foundCodes));
-                                GOTCODES.put(dateCode, foundCodes);
+                                if (!foundCodes.isEmpty()) {
+                                    GOTCODES.put(dateCode, foundCodes);
+                                }
                             }
                         }
                     }
@@ -1528,20 +1544,22 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
 
                             // Retrieving 'state' values from OAUTHv2 Authorization Code Flow responses body or Location header
                             if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
-                                // Enumerate OAUTHv2 authorization codes returned by HTTP responses
-                                dateCode = getHttpHeaderValueFromList(respHeaders, "Date");
+                                // Enumerate OAUTHv2 authorization states returned by HTTP responses
+                                String dateState = getHttpHeaderValueFromList(respHeaders, "Date");
                                 if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
                                     // This is needed to avoid null values on GOTSTATES
-                                    dateCode = Long.toString(currentTimeStampMillis);
+                                    dateState = Long.toString(currentTimeStampMillis);
                                 }
                                 List<String> foundStates = new ArrayList<>();
-                                if (! GOTSTATES.containsKey(dateCode)) {
+                                if (! GOTSTATES.containsKey(dateState)) {
                                     foundStates.addAll(getMatchingParams("state", "state", respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
                                     foundStates.addAll(getMatchingParams("state", "state", getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
                                     foundStates.addAll(getMatchingParams("state", "state", respBody, "link"));
-                                    // Remove duplicate codes foud in same request
+                                    // Remove duplicate states foud in same request
                                     foundStates = new ArrayList<>(new HashSet<>(foundStates));
-                                    GOTSTATES.put(dateCode, foundStates);
+                                    if (!foundStates.isEmpty()) {
+                                        GOTSTATES.put(dateState, foundStates);
+                                    }
                                 }
                             } else {
                                 // The Authorization Code Flow response does not return the state parameter sent within the authorization request
@@ -2103,6 +2121,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         String checkRequestStr;
         Boolean isOpenID = false;
         String locationValue = "";
+        String checkOriginReq_code;
         IParameter scopeParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "scope");
         IParameter resptypeParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "response_type");
         IParameter redirectUriParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "redirect_uri");
@@ -2116,6 +2135,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                     for (String payload_scope : INJ_SCOPE) { 
                         // First re-send the authorization code request to retrieve a new code
                         byte[] checkRequest_code = baseRequestResponse.getRequest();
+                        IRequestInfo checkReqInfo_code = helpers.analyzeRequest(baseRequestResponse);
                         checkRequestResponse_code = callbacks.makeHttpRequest(baseRequestResponse.getHttpService(), checkRequest_code);
                         checkRequestStr = helpers.bytesToString(checkRequest_code);
                         byte [] checkResponse_code = checkRequestResponse_code.getResponse();
@@ -2164,6 +2184,15 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                         if (locationValue.isEmpty()) {
                             // Something goes wrong the redirection url was not found on authorization code response
                             return issues;
+                        }
+                        // When location url is relative add it to the URL origin (to avoid malformed url errors)
+                        if (!locationValue.contains("http")) {
+                            if (checkReqInfo_code.getUrl().getPort()==80 || checkReqInfo_code.getUrl().getPort()==443) {
+                                checkOriginReq_code = checkReqInfo_code.getUrl().getProtocol() + "://" + checkReqInfo_code.getUrl().getHost();
+                            } else {
+                                checkOriginReq_code = checkReqInfo_code.getUrl().getProtocol() + "://" + checkReqInfo_code.getUrl().getAuthority();
+                            }
+                            locationValue = checkOriginReq_code + locationValue;
                         }
                         // Extract the redirection hostname and path
                         URL url_token = new URL(locationValue);
@@ -2986,7 +3015,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
     @Override
     public void extensionUnloaded() {
         // Unload the plugin
-        stdout.println("[+] OAUTHscan Plugin Unloaded");
+        stdout.println("[+] OAUTHScan Plugin Unloaded");
     }
 
 
