@@ -4,12 +4,11 @@ OAUTHScan
 # Description
 OAUTHScan is a Burp Suite Extension written in Java with the aim to provide some automatic security checks, which could be useful during penetration testing on applications implementing OAUTHv2 and OpenID standards.
 
-The plugin looks for various OAUTHv2/OpenID vulnerabilities and common misconfigurations (based on specifications of both frameworks), many of the checks have been developed according with the following references:
+The plugin looks for various OAUTHv2/OpenID vulnerabilities and common misconfigurations (based on official specifications of both frameworks), many of the checks have been developed according with the following references:
 
   * https://datatracker.ietf.org/doc/html/rfc6749
   * https://datatracker.ietf.org/doc/html/rfc6819
   * https://datatracker.ietf.org/doc/html/rfc6750
-  * https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics-09
   * https://oauth.net/2/
   * https://openid.net/connect/
   * https://openid.net/specs/openid-connect-core-1_0.html
@@ -31,7 +30,7 @@ OAUTHScan is fully integrated with the Burp Scanner, after installed on Burp you
 
 
 # GNU License
-Copyright (c) 2021 OAUTHScan
+Copyright (c) 2022 OAUTHScan
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
