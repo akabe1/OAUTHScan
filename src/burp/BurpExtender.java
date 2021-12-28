@@ -34,8 +34,6 @@ import java.io.PrintWriter;
 import java.io.UnsupportedEncodingException;
 import java.net.MalformedURLException;
 import java.net.URL;
-import java.security.SecureRandom;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -44,6 +42,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.text.SimpleDateFormat;
+import java.time.Instant;
+import java.util.TimeZone;
+import java.util.Base64;
+import java.util.Date;
 
 
 
@@ -63,22 +66,22 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
     // List of system already tested for wellknown urls
     private static List<String> alreadyChecked = new ArrayList<>();
 
-    // Range of value to generate random strings
-    static final String RANGE = "0123456789abcdefghijklmnopqrstuvwxyz";
-    static SecureRandom rnd = new SecureRandom();
+    private Thread collaboratorThread;
+    final long NANOSEC_PER_SEC = 1000l*1000*1000;
+    private static final int POLLING_INTERVAL = 3000;  // milliseconds
 
     private static final List<String> INJ_REDIR = new ArrayList<>();
     static {
         INJ_REDIR.add("/../../../../../notexist");
         INJ_REDIR.add("%2f%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2fnotexist");
         INJ_REDIR.add("/..;/..;/..;/../testOauth");
-        INJ_REDIR.add("https://SUBDOMAINCHANGEME.burpcollaborator.net/");
-        INJ_REDIR.add("@SUBDOMAINCHANGEME.burpcollaborator.net/");
-        INJ_REDIR.add("https://SUBDOMAINCHANGEME.burpcollaborator.net#");
-        INJ_REDIR.add(":password@https://SUBDOMAINCHANGEME.burpcollaborator.net#");
-        INJ_REDIR.add(".SUBDOMAINCHANGEME.burpcollaborator.net/");
+        INJ_REDIR.add("https://burpcollaborator.net/");
+        INJ_REDIR.add("@burpcollaborator.net/");
+        INJ_REDIR.add("https://burpcollaborator.net#");
+        INJ_REDIR.add(":password@burpcollaborator.net");
+        INJ_REDIR.add(".burpcollaborator.net/");
         INJ_REDIR.add("https://localhost.burpcollaborator.net/");
-        INJ_REDIR.add("&redirect_uri=https://SUBDOMAINCHANGEME.burpcollaborator.net/");
+        INJ_REDIR.add("&redirect_uri=https://burpcollaborator.net/");
         INJ_REDIR.add("https://127.0.0.1/");
         INJ_REDIR.add("http://127.0.0.1/");
         INJ_REDIR.add("http://localhost/");
@@ -182,6 +185,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
     private Map<String, List<String>> GOTTOKENS = new HashMap<String, List<String>>();
     private Map<String, List<String>> GOTCODES = new HashMap<String, List<String>>();
     private Map<String, List<String>> GOTSTATES = new HashMap<String, List<String>>();
+    private Map<String, List<String>> GOTEXPIRATIONS = new HashMap<String, List<String>>();
 
     private static final List<String> SECRETTOKENS = new ArrayList<>();
     static {
@@ -191,6 +195,9 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         SECRETTOKENS.add("Refresh_Token");
         SECRETTOKENS.add("Refresh-Token");
         SECRETTOKENS.add("RefreshToken");
+        SECRETTOKENS.add("Secret_Token");
+        SECRETTOKENS.add("Secret-Token");
+        SECRETTOKENS.add("SecretToken");
         SECRETTOKENS.add("Token");
         SECRETTOKENS.add("SSO_Auth");
         SECRETTOKENS.add("SSO-Auth");
@@ -221,11 +228,11 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
 
     private static final List<String> EXPIRATIONS = new ArrayList<>();
     static {
-        OPENIDTOKENS.add("Expires_In");
-        OPENIDTOKENS.add("Expires-In");
-        OPENIDTOKENS.add("ExpiresIn");
-        OPENIDTOKENS.add("Expires");
-        OPENIDTOKENS.add("Expiration");
+        EXPIRATIONS.add("Expires_In");
+        EXPIRATIONS.add("Expires-In");
+        EXPIRATIONS.add("ExpiresIn");
+        EXPIRATIONS.add("Expires");
+        EXPIRATIONS.add("Expiration");
     }
 
     // implementing IBurpExtender
@@ -267,16 +274,6 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
 
 
 
-    
-    String randomString(int len) {
-        // Random string generator
-        StringBuilder sbuilt = new StringBuilder(len);
-        for(int i = 0; i < len; i++)
-            sbuilt.append(RANGE.charAt(rnd.nextInt(RANGE.length())));
-        return sbuilt.toString();
-    }
-
-
 
     public String getHttpHeaderValueFromList(List<String> listOfHeaders, String headerName) {
         // Extract heder value if present in the specified list of strings
@@ -314,6 +311,71 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
             }
         }
         return origin;
+    }
+
+
+
+    private String getCollaboratorIssueDetails(IBurpCollaboratorInteraction event, IBurpCollaboratorClientContext collaboratorContext) {
+        // Method to generate the appropriate burp-collaborator issue detail for OAUTHv2/OpenID 'request_uri' SSRF issues
+        String issueDetails = "";
+        String localTimestamp = "";
+        // Convert timestamp to local time
+		String dateStr = event.getProperty("time_stamp");
+        SimpleDateFormat sdf =  new SimpleDateFormat("yyyy-MMM-dd HH:mm:ss z");
+        TimeZone tz = TimeZone.getDefault();
+        sdf.setTimeZone(tz);
+        try{
+        	Date date = sdf.parse(dateStr);
+        	localTimestamp = sdf.format(date);
+        } catch(Exception e) {
+        	localTimestamp = dateStr;
+        }
+        // Set the issueDetails value based on IBurpCollaboratorInteraction types
+		switch (event.getProperty("type")) {
+			case "DNS":
+				issueDetails = "the Collaborator server received a DNS lookup of type <b>" + event.getProperty("query_type") +
+							   "</b> for the domain name <b>" + event.getProperty("interaction_id") + "." + 
+							   collaboratorContext.getCollaboratorServerLocation() + "</b><br>" +
+						       "The lookup was received from IP address " + event.getProperty("client_ip") + " at " + 
+						       localTimestamp + " <br><br>" + "Received DNS query (encoded in Base64):<br><code>" + 
+						       event.getProperty("raw_query") + "</code>";
+				break;
+				
+			case "HTTP":
+				issueDetails = "the Collaborator server received an HTTP request for the domain name <b>" + event.getProperty("interaction_id") + 
+								"." + collaboratorContext.getCollaboratorServerLocation() + " </b> from IP address " + 
+								event.getProperty("client_ip") + " at " + localTimestamp + "<br><br>" +
+								"Request received by collaborator (encoded in Base64):<br><code>" +  event.getProperty("request") + "</code><br><br>" +
+								"Response from collaborator (encoded in Base64):<br><code>" +  event.getProperty("response") + "</code>";
+				break;
+				
+			case "SMTP":
+				String decodedConversation = new String(Base64.getDecoder().decode(event.getProperty("conversation")));
+				Pattern patt = Pattern.compile(".*mail from:.*?<(.*?)>.*rcpt to:.*?<(.*?)>.*\\r\\n\\r\\n(.*?)\\r\\n\\.\\r\\n.*",Pattern.CASE_INSENSITIVE + Pattern.DOTALL);
+				Matcher match = patt.matcher(decodedConversation);	
+				if(match.find()) {
+					String from = match.group(1);
+					String to = match.group(2);
+					String message = match.group(3);
+					issueDetails = "the Collaborator server received an SMTP connection from IP address " + 
+					               event.getProperty("client_ip") + " at " + localTimestamp + " <br><br>" +
+					               "The email details were:<br><br>From:<br><b>" + from + "</b><br><br>To:<br><b>" + to + 
+					               "</b><br><br>Message:<br><code>" + message + "</code><br><br>" +
+					               "SMTP Conversation:<br><br><code>" + decodedConversation.replace("\r\n", "<br>") + "</code>";
+				} else {
+					issueDetails = "the Collaborator server received an SMTP connection from IP address " + 
+				               event.getProperty("client_ip") + " at " + localTimestamp + " <br><br>" +
+				               "SMTP Conversation:<br><br><code>" + decodedConversation.replace("\r\n", "<br>") + "</code>";
+				}
+				break;
+				
+			default:
+				issueDetails = "the Collaborator server received a " + event.getProperty("type") +  " interaction from IP address " + 
+			               event.getProperty("client_ip") + " at " + localTimestamp + " (domain name: <b>" +
+			               event.getProperty("interaction_id") + "." + collaboratorContext.getCollaboratorServerLocation() + "</b>)";
+				break;
+		}	
+        return issueDetails;
     }
 
 
@@ -396,10 +458,10 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
 
     @Override
     public List<IScanIssue> doPassiveScan(IHttpRequestResponse baseRequestResponse) {
-        //String dateToken = "";
-        //String dateCode = "";
         long currentTimeStampMillis = Instant.now().toEpochMilli();
         List<IScanIssue> issues = new ArrayList<>();
+        String respType = "";
+        String redirUri = "";
 
         // Getting request an response data
         byte[] rawRequest = baseRequestResponse.getRequest();
@@ -408,6 +470,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         String responseString = helpers.bytesToString(rawResponse);
         IRequestInfo reqInfo = helpers.analyzeRequest(baseRequestResponse);
         IResponseInfo respInfo = helpers.analyzeResponse(rawResponse);
+        String reqQueryString = reqInfo.getUrl().toString();
 
         // Getting the Request URL query parameters 
         Map<String, String> reqQueryParam = new HashMap<String, String>();
@@ -416,10 +479,6 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                 reqQueryParam = getQueryMap(reqInfo.getUrl().getQuery());
             }
         }
-        //Map<String, String> reqQueryParam = getQueryMap(reqInfo.getUrl().getQuery());
-        String reqQueryString = reqInfo.getUrl().toString();
-        String respType = "";
-        String redirUri = "";
 
         // Getting the Request Params and Headers
         List<IParameter> reqParam = reqInfo.getParameters();
@@ -435,121 +494,8 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
             respBody = responseString.substring(respInfo.getBodyOffset()).trim();
         }
 
-        // Searching for HTTP responses releasing secret tokens in body or Location header
-        if (!respBody.isEmpty() || respInfo.getStatusCode() ==302) {
-            // Checking for Duplicate Token value issues on OAUTHv2 and OpenID
-            if (! GOTTOKENS.isEmpty()) {
-                String respDate = getHttpHeaderValueFromList(respHeaders, "Date");
-                if (getHttpHeaderValueFromList(respHeaders, "Date") == null) {
-                    // This is needed to avoid null values on respDate
-                    respDate = Long.toString(currentTimeStampMillis);
-                }
-                // Start searching if last issued secret token is a duplicated of already received tokens
-                for (Map.Entry<String,List<String>> entry : GOTTOKENS.entrySet()) {
-                    List<String> tokenList = entry.getValue();
-                    String tokenDate = entry.getKey();
-                    for (String tokenValue: tokenList) {
-                        if (responseString.toLowerCase().contains(tokenValue) & (! tokenDate.equals(respDate))) {
-                            // This OAUTHv2/OpenID Flow response contains an already released Secret Token
-                            List<int[]> matches = getMatches(responseString.getBytes(), tokenValue.getBytes());
-                            issues.add(
-                                new CustomScanIssue(
-                                    baseRequestResponse.getHttpService(),
-                                    helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
-                                    "OAUTHv2/OpenID Duplicate Secret Token Detected",
-                                    "The Authorization Server releases duplicate secret token (Access or Refersh Token) values "
-                                    +"after successful OAUTHv2/OpenID login procedure.\n<br> For security reasons the OAUTHv2/OpenID "
-                                    +"specifications require that secret token must be unique for each user's session.\n<br>"
-                                    +"The response contains the following already released secret token value <b>"+tokenValue+"</b>\n<br>"
-                                    +"Note: this issue should be <b>confirmed manually</b> by searching the duplicated secret token "
-                                    +"values in the burp-proxy history.",
-                                    "Medium",
-                                    "Firm"
-                                )
-                            );
-                        }
-                    }
-                }
-            }
 
-            // Enumerate OAUTHv2/OpenID secret tokens returned by HTTP responses
-            String dateToken = getHttpHeaderValueFromList(respHeaders, "Date");
-            if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
-                // This is needed to avoid null values on GOTTOKENS
-                dateToken = Long.toString(currentTimeStampMillis);
-            }
-            List<String> foundTokens = new ArrayList<>();
-            for (String pName : SECRETTOKENS) {
-                if (! GOTTOKENS.containsKey(dateToken)) {
-                    foundTokens.addAll(getMatchingParams(pName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
-                    foundTokens.addAll(getMatchingParams(pName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
-                    foundTokens.addAll(getMatchingParams(pName, pName, respBody, "link"));
-                    // Remove duplicate tokens found in same request
-                    foundTokens = new ArrayList<>(new HashSet<>(foundTokens));
-                    if (!foundTokens.isEmpty()) {
-                        GOTTOKENS.put(dateToken, foundTokens);
-                    }
-                }
-            }
-
-
-            // Checking for Lifetime issues on released Secret Tokens (Access and Refresh Tokens)
-            for (String pName : SECRETTOKENS) {
-                for (String expName : EXPIRATIONS) {
-                    List<String> expirList = getMatchingParams(expName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type"));
-                    if (expirList.isEmpty()) {
-                        // Check if a secret token is issued without expiration time
-                        if (!getMatchingParams(pName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")).isEmpty()) {
-                            issues.add(
-                                new CustomScanIssue(
-                                    baseRequestResponse.getHttpService(),
-                                    helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                    "OAUTHv2/OpenID Misconfiguration - Secret Tokens Without Expiration Parameter",
-                                    "It seems that after successuful login the Authorization Server releases a OAUTHv2/OpenID secret token which never expires.\n<br>"
-                                    +"More specifically, the secret token <b>"+pName+"</b> returned in response does not has associated an expiration <code>expires_in</code> parameter.\n<br> "
-                                    +"This issue could be a false positive, then it is suggested to double-check it manually.\n<br> "
-                                    +"If the Authorization Server releases secret tokens which never expire, it exposes the OAUTHv2/OpenID platform "
-                                    +"to various security risks of in case of accidental leakage of a secret token.\n<br>"
-                                    +"If possible it is advisable to force expiration for Access Token after 1 hour, and for Refresh Token after 2 hours\n<br>"
-                                    +"<br>References:<br>"
-                                    +"<a href=\"https://www.rfc-editor.org/rfc/rfc6819#page-54\">https://www.rfc-editor.org/rfc/rfc6819#page-54</a>",
-                                    "High",
-                                    "Firm"
-                                )
-                            );
-                        }
-                    // Check if secret token lifetime is excessive
-                    } else {
-                        for (String expirTime : expirList) {
-                            // Considering excessive an expiration greater than 2 hours
-                            if (Integer.parseInt(expirTime) > 7200) {
-                                issues.add(
-                                    new CustomScanIssue(
-                                        baseRequestResponse.getHttpService(),
-                                        helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                        "OAUTHv2/OpenID Misconfiguration - Excessive Lifetime for Secret Tokens",
-                                        "Detected an excessive lifetime for the OAUTHv2/OpenID secret tokens released after a successful login.\n<br> "
-                                        +"More specifically the issued secret token <b>"+pName+"</b> expires in <b>"+expirTime+"</b> seconds.\n<br> "
-                                        +"If possible, it is advisable to set an Access Token expiration time of an 1 hour, and set a Refresh Token expiration time of 2 hours\n<br>"
-                                        +"<br>References:<br>"
-                                        +"<a href=\"https://www.rfc-editor.org/rfc/rfc6819#page-54\">https://www.rfc-editor.org/rfc/rfc6819#page-54</a>",
-                                        "Medium",
-                                        "Firm"
-                                    )
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-
-
-        // Retrieve some OAUTHv2 request parameters
+        // Retrieving some OAUTHv2/OpenID request parameters
         IParameter scopeParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "scope");
         IParameter resptypeParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "response_type");
         IParameter redirParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "redirect_uri");
@@ -562,699 +508,945 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         IParameter nonceParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "nonce");
         IParameter respmodeParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "response_mode");
 
-        // First check if request belongs to a OpenID Flow
-        Boolean isOpenID = false;
-        Boolean foundRefresh = false;
-        if (scopeParameter!=null) {
-            if (scopeParameter.getValue().contains("openid")) {
-                isOpenID = true;
-            }
-        } else if (resptypeParameter!=null) {
-            if (helpers.urlDecode(resptypeParameter.getValue()).contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).equals("code token")) {
-                isOpenID = true;
-            }
-        } 
 
-        // Starting specific passive checks on OpenID requests
-        if (isOpenID) {  
-            if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
-                // Enumerate OpenID id_tokens returned by HTTP responses
-                List<String> foundIdTokens = new ArrayList<>();
-                for (String pName : OPENIDTOKENS) {
-                    foundIdTokens.addAll(getMatchingParams(pName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
-                    foundIdTokens.addAll(getMatchingParams(pName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
-                    foundIdTokens.addAll(getMatchingParams(pName, pName, respBody, "link"));
-                    // Remove duplicate id_tokens found in same request
-                    foundIdTokens = new ArrayList<>(new HashSet<>(foundIdTokens));
-                    if (!foundIdTokens.isEmpty()) {
-                        GOTOPENIDTOKENS.addAll(foundIdTokens);
+        // Considering only OAUTHv2/OpenID Flow authorization and token requests
+        if (clientidParameter!=null || grantParameter!=null || resptypeParameter!=null ) {
+            // Determining if request belongs to a OpenID Flow
+            Boolean isOpenID = false;
+            Boolean foundRefresh = false;
+            if (scopeParameter!=null) {
+                if (scopeParameter.getValue().contains("openid")) {
+                    isOpenID = true;
+                }
+            } else if (resptypeParameter!=null) {
+                if (helpers.urlDecode(resptypeParameter.getValue()).contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).equals("code token")) {
+                    isOpenID = true;
+                }
+            } 
+
+
+            // Searching for HTTP responses releasing secret tokens in body or Location header
+            if (!respBody.isEmpty() || respInfo.getStatusCode() ==302) {
+                // Checking for Duplicate Token value issues on OAUTHv2 and OpenID
+                if (! GOTTOKENS.isEmpty()) {
+                    String respDate = getHttpHeaderValueFromList(respHeaders, "Date");
+                    if (getHttpHeaderValueFromList(respHeaders, "Date") == null) {
+                        // This is needed to avoid null values on respDate
+                        respDate = Long.toString(currentTimeStampMillis);
+                    }
+                    // Start searching if last issued secret token is a duplicated of already received tokens
+                    for (Map.Entry<String,List<String>> entry : GOTTOKENS.entrySet()) {
+                        List<String> tokenList = entry.getValue();
+                        String tokenDate = entry.getKey();
+                        for (String tokenValue: tokenList) {
+                            if (responseString.toLowerCase().contains(tokenValue) & (! tokenDate.equals(respDate))) {
+                                // This OAUTHv2/OpenID Flow response contains an already released Secret Token
+                                List<int[]> matches = getMatches(responseString.getBytes(), tokenValue.getBytes());
+                                issues.add(
+                                    new CustomScanIssue(
+                                        baseRequestResponse.getHttpService(),
+                                        helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
+                                        "OAUTHv2/OpenID Duplicate Secret Token Value Detected",
+                                        "The Authorization Server seems issuing duplicate secret token (Access or Refersh Token) values "
+                                        +"after successfully completion of OAUTHv2/OpenID login procedure.\n<br><br>"
+                                        +"In details, the response contains the following secret token value <b>"+tokenValue+"</b> which was already released.\n<br><br>"
+                                        +"For security reasons the OAUTHv2/OpenID specifications require that secret token must be unique for each user's session.\n<br>"
+                                        +"Note: this issue should be <b>confirmed manually</b> by searching the duplicated secret token "
+                                        +"values in the burp-proxy history.\n<br>"
+                                        +"<br>References:<br>"
+                                        +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6749\">https://datatracker.ietf.org/doc/html/rfc6749</a><br>"
+                                        +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
+                                        "Medium",
+                                        "Firm"
+                                    )
+                                );
+                            }
+                        }
+                    }
+                }
+                // Enumerate OAUTHv2/OpenID secret tokens returned by HTTP responses
+                String dateToken = getHttpHeaderValueFromList(respHeaders, "Date");
+                if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
+                    // This is needed to avoid null values on GOTTOKENS
+                    dateToken = Long.toString(currentTimeStampMillis);
+                }
+                List<String> foundTokens = new ArrayList<>();
+                for (String pName : SECRETTOKENS) {
+                    // Check if already got a token in same response (filtering by date)
+                    if (! GOTTOKENS.containsKey(dateToken)) {
+                        foundTokens.addAll(getMatchingParams(pName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
+                        foundTokens.addAll(getMatchingParams(pName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
+                        foundTokens.addAll(getMatchingParams(pName, pName, respBody, "link"));
+                        // Remove duplicate tokens found in same response
+                        foundTokens = new ArrayList<>(new HashSet<>(foundTokens));
+                        if (!foundTokens.isEmpty()) {
+                            GOTTOKENS.put(dateToken, foundTokens);
+                            // Check for weak secret tokens issues (guessable values)
+                            for (String fToken : foundTokens) {
+                                if (fToken.length()<6) {
+                                    // Found a weak secret token
+                                    List<int[]> requestHighlights = new ArrayList<>(1);
+                                    int[] tokenOffset = new int[2];
+                                    int tokenStart = requestString.indexOf(fToken);
+                                    tokenOffset[0] = tokenStart;
+                                    tokenOffset[1] = tokenStart+fToken.length();
+                                    requestHighlights.add(tokenOffset);
+                                    issues.add(
+                                        new CustomScanIssue(
+                                            baseRequestResponse.getHttpService(),
+                                            helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                            "OpenID Weak Secret Token Value Detected",
+                                            "The OpenID Flow presents a security misconfiguration, the Authorization Server releases weak secret token values "
+                                            +"(insufficient entropy) during OpenID login procedure.\n<br><br> "
+                                            +"In details the OpenID Flow response contains a secret token value of <b>"+fToken+"</b>.\n<br>"
+                                            +"Based on OpenID specifications for security reasons the secret tokens must be unpredictable and unique "
+                                            +"per client session.\n<br>Since the secret token value is guessable (insufficient entropy) "
+                                            +"then the attack surface of the OpenID service increases.\n<br>"
+                                            +"<br>References:<br>"
+                                            +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
+                                            "High",
+                                            "Firm"
+                                        )
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                // Checking for Lifetime issues on released Secret Tokens (Access and Refresh Tokens)
+                List<String> expirList = new ArrayList<>();
+                String dateExpir = getHttpHeaderValueFromList(respHeaders, "Date");
+                if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
+                    // This is needed to avoid null values on GOTEXPIRATIONS
+                    dateExpir = Long.toString(currentTimeStampMillis);
+                }
+                for (String pName : SECRETTOKENS) {
+                    for (String expName : EXPIRATIONS) {
+                        // Check if already got a expiration in same response (filtering by token name)
+                        if (! GOTEXPIRATIONS.containsKey(dateExpir)) {
+                            expirList.addAll(getMatchingParams(expName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
+                            expirList.addAll(getMatchingParams(expName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
+                            expirList.addAll(getMatchingParams(expName, pName, respBody, "link"));
+                            // Remove duplicate expiration times found in same response
+                            expirList = new ArrayList<>(new HashSet<>(expirList));
+                            if (!expirList.isEmpty()) {
+                                GOTEXPIRATIONS.put(dateExpir, expirList);
+                                // Checking for secret tokens with excessive expiration times 
+                                for (String expirTime : expirList) {
+                                    // Considering excessive an expiration greater than 2 hours
+                                    if (Integer.parseInt(expirTime) > 7200) {
+                                        List<int[]> matches = getMatches(responseString.getBytes(), expirTime.getBytes());
+                                        issues.add(
+                                            new CustomScanIssue(
+                                                baseRequestResponse.getHttpService(),
+                                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
+                                                "OAUTHv2/OpenID Flow Excessive Lifetime for Secret Tokens",
+                                                "Detected an excessive lifetime for the OAUTHv2/OpenID secret tokens released after a successful login.\n<br> "
+                                                +"More specifically the issued secret token <b>"+pName+"</b> expires in <b>"+expirTime+"</b> seconds.\n<br> "
+                                                +"If possible, it is advisable to set an Access Token expiration time of an 1 hour, and set a Refresh Token expiration time of 2 hours\n<br>"
+                                                +"<br>References:<br>"
+                                                +"<a href=\"https://www.rfc-editor.org/rfc/rfc6819#page-54\">https://www.rfc-editor.org/rfc/rfc6819#page-54</a>",
+                                                "Medium",
+                                                "Firm"
+                                            )
+                                        );
+                                    }
+                                }
+                            } else {
+                                List<String> tokenList = new ArrayList<>();
+                                // Looking for released secret tokens on response
+                                tokenList.addAll(getMatchingParams(pName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
+                                tokenList.addAll(getMatchingParams(pName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
+                                tokenList.addAll(getMatchingParams(pName, pName, respBody, "link"));
+                                // Checking if a secret token is issued without expiration time (expirList is empty)
+                                if (!tokenList.isEmpty()) {
+                                    issues.add(
+                                        new CustomScanIssue(
+                                            baseRequestResponse.getHttpService(),
+                                            helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                            "OAUTHv2/OpenID Flow Secret Tokens Without Expiration Parameter",
+                                            "It seems that after successuful login the Authorization Server releases a OAUTHv2/OpenID secret token which never expires.\n<br>"
+                                            +"More specifically, the secret token <b>"+pName+"</b> returned in response does not has associated an expiration <code>expires_in</code> parameter.\n<br> "
+                                            +"This issue could be a false positive, then it is suggested to double-check it manually.\n<br> "
+                                            +"If the Authorization Server releases secret tokens which never expire, it exposes the OAUTHv2/OpenID platform "
+                                            +"to various security risks of in case of accidental leakage of a secret token.\n<br>"
+                                            +"If possible it is advisable to force expiration for Access Token after 1 hour, and for Refresh Token after 2 hours\n<br>"
+                                            +"<br>References:<br>"
+                                            +"<a href=\"https://www.rfc-editor.org/rfc/rfc6819#page-54\">https://www.rfc-editor.org/rfc/rfc6819#page-54</a>",
+                                            "High",
+                                            "Firm"
+                                        )
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }
+
+
+            // Go here for specific passive checks on OpenID authorization requests
+            if (isOpenID) {  
+                // Looking for OpenID id_token values
+                if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
+                    // Enumerate OpenID id_tokens returned by HTTP responses
+                    List<String> foundIdTokens = new ArrayList<>();
+                    for (String pName : OPENIDTOKENS) {
+                        foundIdTokens.addAll(getMatchingParams(pName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
+                        foundIdTokens.addAll(getMatchingParams(pName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
+                        foundIdTokens.addAll(getMatchingParams(pName, pName, respBody, "link"));
+                        if (!foundIdTokens.isEmpty()) {
+                            // Check for weak id_tokens issues (not JWT values)
+                            for (String fToken : foundIdTokens) {
+                                if (fToken.length()<6) {
+                                    // Found a weak id_token
+                                    List<int[]> requestHighlights = new ArrayList<>(1);
+                                    int[] tokenOffset = new int[2];
+                                    int tokenStart = requestString.indexOf(fToken);
+                                    tokenOffset[0] = tokenStart;
+                                    tokenOffset[1] = tokenStart+fToken.length();
+                                    requestHighlights.add(tokenOffset);
+                                    issues.add(
+                                        new CustomScanIssue(
+                                            baseRequestResponse.getHttpService(),
+                                            helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                            "OpenID Improper ID_Token Value Detected",
+                                            "The OpenID Flow presents a security misconfiguration, the Authorization Server releases improper <code>id_token</code> values "
+                                            +"(not a JWT) during login procedure.\n<br><br> "
+                                            +"In details, the OpenID Flow response contains a <code>id_token</code> value of <b>"+fToken+"</b>.\n<br><br>"
+                                            +"Based on OpenID specifications the <code>id_token</code> must contain the encoded user's "
+                                            +"authentication information in the form of a JWT, so that it can be parsed and validated by the application.\n<br>"
+                                            +"Since the <code>id_token</code> value has not the JWT format, then the attack surface of the OpenID service increases.\n<br>"
+                                            +"<br>References:<br>"
+                                            +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
+                                            "High",
+                                            "Firm"
+                                        )
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    // Remove duplicate id_tokens found in same response
+                    foundIdTokens = new ArrayList<>(new HashSet<>(foundIdTokens));
+                    GOTOPENIDTOKENS.addAll(foundIdTokens);
+                }
         
-            // Check for weak OpenID nonce values (i.e. insufficient length, only alphabetic, only numeric, etc.)
-            if (nonceParameter!=null) {
-                String nonceValue = helpers.urlDecode(nonceParameter.getValue());
-                if ( (nonceValue.length() < 5) || ( (nonceValue.length() < 7) & ((nonceValue.matches("[a-zA-Z]+")) || (nonceValue.matches("[\\-\\+]?[0-9]+")))) ) {
-                    List<int[]> requestHighlights = new ArrayList<>(1);
-                    int[] nonceOffset = new int[2];
-                    int nonceStart = requestString.indexOf(nonceValue);
-                    nonceOffset[0] = nonceStart;
-                    nonceOffset[1] = nonceStart+nonceValue.length();
-                    requestHighlights.add(nonceOffset);
+
+                // Check for weak OpenID nonce values (i.e. insufficient length, only alphabetic, only numeric, etc.)
+                if (nonceParameter!=null) {
+                    String nonceValue = helpers.urlDecode(nonceParameter.getValue());
+                    if ( (nonceValue.length() < 5) || ( (nonceValue.length() < 7) & ((nonceValue.matches("[a-zA-Z]+")) || (nonceValue.matches("[\\-\\+]?[0-9]+")))) ) {
+                        List<int[]> requestHighlights = new ArrayList<>(1);
+                        int[] nonceOffset = new int[2];
+                        int nonceStart = requestString.indexOf(nonceValue);
+                        nonceOffset[0] = nonceStart;
+                        nonceOffset[1] = nonceStart+nonceValue.length();
+                        requestHighlights.add(nonceOffset);
+                        issues.add(
+                            new CustomScanIssue(
+                                baseRequestResponse.getHttpService(),
+                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                "OpenID Weak Nonce Parameter",
+                                "The OpenID Flow presents a security misconfiguration, the Authorization Server accepts weak values "
+                                +"of the <code>nonce</code> parameter received during OpenID login procedure.\n<br> "
+                                +"In details, the OpenID Flow request contains a <code>nonce</code> value of <b>"+nonceValue+"</b>.\n<br>"
+                                +"Based on OpenID specifications the <code>nonce</code> parameter is used to associate a Client session "
+                                +"with an ID Token, and to mitigate replay attacks. For these reasons it should be unpredictable and unique "
+                                +"per client session.\n<br>Since the <code>nonce</code> value is guessable (insufficient entropy) "
+                                +"then the attack surface of the OpenID service increases.\n<br>"
+                                +"<br>References:<br>"
+                                +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes\">https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes</a>",
+                                "Low",
+                                "Firm"
+                            )
+                        );
+                    }
+                }
+
+                // Check for weak OpenID state values (i.e. insufficient length, only alphabetic, only numeric, etc.)
+                if (stateParameter!=null) {
+                    String stateValue = stateParameter.getValue();
+                    if ( (stateValue.length() < 5) || ( (stateValue.length() < 7) & ((stateValue.matches("[a-zA-Z]+")) || (stateValue.matches("[0-9]+")))) ) {
+                        List<int[]> requestHighlights = new ArrayList<>(1);
+                        int[] nonceOffset = new int[2];
+                        int nonceStart = requestString.indexOf(stateValue);
+                        nonceOffset[0] = nonceStart;
+                        nonceOffset[1] = nonceStart+stateValue.length();
+                        requestHighlights.add(nonceOffset);
+                        issues.add(
+                            new CustomScanIssue(
+                                baseRequestResponse.getHttpService(),
+                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                "OpenID Weak State Parameter",
+                                "The OpenID Flow presents a security misconfiguration because is using weak values for"
+                                +"the <code>state</code> parameter during OpenID login procedure.\n<br> "
+                                +"In details, the OpenID Flow request contains the following <code>state</code> parameter weak value <b>"+stateValue+"</b>.\n<br>"
+                                +"Based on OpenID specifications the <code>state</code> parameter should be used to maintain state between "
+                                +"the request and the callback, and to mitigate CSRF attacks. For these reasons its value should be unpredictable and unique "
+                                +"for usr's session.\n<br>When the <code>state</code> value is guessable (insufficient entropy) "
+                                +"then the attack surface of the OpenID service increases.\n<br>"
+                                +"<br>References:<br>"
+                                +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
+                                "Low",
+                                "Firm"
+                            )
+                        );
+                    }
+                }
+
+
+
+                // Checking for OpenID Flows with 'request_uri' parameter on authorization request
+                if (requesturiParameter!=null) {
+                    String reqUriValue = requesturiParameter.getValue();
+                    List<int[]> matches = getMatches(requestString.getBytes(), reqUriValue.getBytes());
                     issues.add(
                         new CustomScanIssue(
                             baseRequestResponse.getHttpService(),
                             helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
-                            "OpenID Weak Nonce Parameter",
-                            "The OpenID Flow presents a security misconfiguration, the Authorization Server accepts weak values "
-                            +"of the <code>nonce</code> parameter received during OpenID login procedure.\n<br> "
-                            +"In details the OpenID Flow request contains a <code>nonce</code> value of <b>"+nonceValue+"</b>.\n<br>"
-                            +"Based on OpenID specifications the <code>nonce</code> parameter is used to associate a Client session "
-                            +"with an ID Token, and to mitigate replay attacks. For these reasons it should be unpredictable and unique "
-                            +"per client session.\n<br>Since the <code>nonce</code> value is guessable (insufficient entropy) "
-                            +"then the attack surface of the OpenID service increases.\n<br>"
+                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, matches, null) },
+                            "OpenID Flow with Request_Uri Parameter Detected",
+                            "The OpenID Flow uses the parameter <code>request_uri</code> set to <b>"+reqUriValue+"</b> in order to"
+                            +"enable the retrieving of client's Request-Object via a URI reference to it.\n<br>"
+                            +"Based on OpenID specifications the value of the <code>request_uri</code> parameter "
+                            +"is set to an URI pointing to a server hosting a JWT which contains the client's parameter values. "
+                            +"In this way the OpenID Provider can fetch the provided URI and retrieve the Request-Object "
+                            +"by parsing the JWT contents.\n<br>"
+                            +"For security reasons the URI value of <code>request_uri</code> parameter should be carefully validated "
+                            +"at server-side, otherwise a threat agent could be able to lead the OpenID Provider to interact with "
+                            +"an arbitrary server under is control and then potentially exploit SSRF vulnerabilities.\n<br>"
+                            +"As mitigation the OpenID Provider should define a whitelist of allowed URI values (pre-registered "
+                            +"during the client registration process) for the <code>request_uri</code> parameter.\n<br>"
                             +"<br>References:<br>"
-                            +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes\">https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes</a>",
-                            "Low",
-                            "Firm"
-                        )
-                    );
-                }
-            }
-
-            // Check for weak OpenID state values (i.e. insufficient length, only alphabetic, only numeric, etc.)
-            if (stateParameter!=null) {
-                String stateValue = stateParameter.getValue();
-                if ( (stateValue.length() < 5) || ( (stateValue.length() < 7) & ((stateValue.matches("[a-zA-Z]+")) || (stateValue.matches("[0-9]+")))) ) {
-                    List<int[]> requestHighlights = new ArrayList<>(1);
-                    int[] nonceOffset = new int[2];
-                    int nonceStart = requestString.indexOf(stateValue);
-                    nonceOffset[0] = nonceStart;
-                    nonceOffset[1] = nonceStart+stateValue.length();
-                    requestHighlights.add(nonceOffset);
-                    issues.add(
-                        new CustomScanIssue(
-                            baseRequestResponse.getHttpService(),
-                            helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
-                            "OpenID Weak State Parameter",
-                            "The OpenID Flow presents a security misconfiguration because is using weak values for"
-                            +"the <code>state</code> parameter during OpenID login procedure.\n<br> "
-                            +"In details the OpenID Flow request contains the following <code>state</code> parameter weak value <b>"+stateValue+"</b>.\n<br>"
-                            +"Based on OpenID specifications the <code>state</code> parameter should be used to maintain state between "
-                            +"the request and the callback, and to mitigate CSRF attacks. For these reasons its value should be unpredictable and unique "
-                            +"for usr's session.\n<br>When the <code>state</code> value is guessable (insufficient entropy) "
-                            +"then the attack surface of the OpenID service increases.\n<br>"
-                            +"<br>References:<br>"
-                            +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
-                            "Low",
-                            "Firm"
-                        )
-                    );
-                }
-            }
-
-
-
-            // Checking for OpenID Flows with 'request_uri' parameter
-            if (requesturiParameter!=null) {
-                issues.add(
-                    new CustomScanIssue(
-                        baseRequestResponse.getHttpService(),
-                        helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                        "OpenID Flow with Request_Uri Parameter Detected",
-                        "The OpenID Flow uses the parameter <code>request_uri</code> to "
-                        +"enable the retrieving of client's Request-Object via a URI reference to it.\n<br>"
-                        +"Based on OpenID specifications the value of the <code>request_uri</code> parameter "
-                        +"is set to an URI pointing to a server hosting a JWT which contains the client's parameter values. "
-                        +"In this way the OpenID Provider can fetch the provided URI and retrieve the Request-Object "
-                        +"by parsing the JWT contents.\n<br>"
-                        +"For security reasons the URI value of <code>request_uri</code> parameter should be carefully validated "
-                        +"at server-side, otherwise a threat agent could be able to lead the OpenID Provider to interact with "
-                        +"an arbitrary server under is control and then potentially exploit SSRF vulnerabilities.\n<br>"
-                        +"As mitigation the OpenID Provider should define a whitelist of allowed URI values (pre-registered "
-                        +"during the client registration process) for the <code>request_uri</code> parameter.\n<br>"
-                        +"<br>References:<br>"
-                        +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#rfc.section.6.2\">https://openid.net/specs/openid-connect-core-1_0.html#rfc.section.6.2</a>"
-                        +"<a href=\"https://portswigger.net/research/hidden-oauth-attack-vectors\">https://portswigger.net/research/hidden-oauth-attack-vectors</a>",
-                        "Information",
-                        "Certain"
-                    )
-                );
-            }
-
-            // Checks for all OpenID Flows login requests
-            if ( ((reqQueryParam!=null & reqQueryParam.containsKey("client_id") & reqQueryParam.containsKey("response_type")) || 
-            ( reqParam!=null & (clientidParameter != null) & (resptypeParameter!=null))) ) {
-                stdout.println("[+] Passive Scan: OpenID Flow detected");
-                if (reqQueryParam.containsKey("redirect_uri") & reqQueryParam.containsKey("response_type")) {
-                    respType = reqQueryParam.get("response_type");
-                    redirUri = reqQueryParam.get("redirect_uri");
-                } else if ((redirParameter != null) & (resptypeParameter!=null)) {
-                    respType = resptypeParameter.getValue();
-                    redirUri = redirParameter.getValue();
-                }
-                
-                // Checking for OpenID Implicit Flow
-                if (respType.equals("token") || respType.equals("id_token") || helpers.urlDecode(respType).equals("id_token token")){
-                    // Found OpenID Implicit Flow
-                    issues.add(
-                        new CustomScanIssue(
-                            baseRequestResponse.getHttpService(),
-                            helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                            "OpenID Implicit Flow Detected",
-                            "This is a login request of OpenID Implicit Flow.\n<br>"
-                            +"Note: OpenID Implicit Flow should be avoided in Mobile application contexts because considered insecure.",
+                            +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#rfc.section.6.2\">https://openid.net/specs/openid-connect-core-1_0.html#rfc.section.6.2</a><br>"
+                            +"<a href=\"https://portswigger.net/research/hidden-oauth-attack-vectors\">https://portswigger.net/research/hidden-oauth-attack-vectors</a>",
                             "Information",
                             "Certain"
                         )
                     );
-                    // Checking for OpenID Implicit Flow misconfiguration (missing nonce)
-                    if (nonceParameter==null) {
+                }
+
+                // Checks for all OpenID Flows login requests
+                if ( ((reqQueryParam!=null & reqQueryParam.containsKey("client_id") & reqQueryParam.containsKey("response_type")) || 
+                ( reqParam!=null & (clientidParameter != null) & (resptypeParameter!=null))) ) {
+                    stdout.println("[+] Passive Scan: OpenID Flow detected");
+                    if (reqQueryParam.containsKey("redirect_uri") & reqQueryParam.containsKey("response_type")) {
+                        respType = reqQueryParam.get("response_type");
+                        redirUri = reqQueryParam.get("redirect_uri");
+                    } else if ((redirParameter != null) & (resptypeParameter!=null)) {
+                        respType = resptypeParameter.getValue();
+                        redirUri = redirParameter.getValue();
+                    }
+                
+                    // Checking for OpenID Implicit Flow
+                    if (respType.equals("token") || respType.equals("id_token") || helpers.urlDecode(respType).equals("id_token token")){
+                        // Found OpenID Implicit Flow
                         issues.add(
                             new CustomScanIssue(
                                 baseRequestResponse.getHttpService(),
                                 helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                 new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                "OpenID Implicit Flow without Nonce Parameter",
-                                "The OpenID Implicit Flow is improperly implemented because the "
-                                +"mandatory <code>nonce</code> is missing.\n<br>This parameter is randomic and unique per "
-                                +"client session in order to provide a security mitigation against replay attacks, its absence "
-                                +"increases the attack surface of the OpenID service.\n<br>"
-                                +"Note: conthe Implicit Flow should be avoided in Mobile application contexts because is inerently insecure.\n<br>"
-                                +"<br>References:<br>"
-                                +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#ImplicitAuthRequest\">https://openid.net/specs/openid-connect-core-1_0.html#ImplicitAuthRequest</a><br>"
-                                +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes\">https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes</a>",
-                                "Medium",
+                                "OpenID Implicit Flow Detected",
+                                "This is a login request of OpenID Implicit Flow.\n<br>"
+                                +"Note: OpenID Implicit Flow should be avoided in Mobile application contexts because considered insecure.",
+                                "Information",
                                 "Certain"
                             )
                         );
-                    }
-
-                    // Checking for OpenID Implicit Flow Deprecated Implementation with access token in URL
-                    if (respType.equals("token") || helpers.urlDecode(respType).equals("id_token token")) {
-                        // If response_mode is set to form_post then the Implicit Flow is yet acceptable
-                        if ( respmodeParameter==null || (!respmodeParameter.getValue().equals("form_post")) ) {
-                            // Found dangerous implementation of OpenID Implicit Flow which exposes access tokens in URL
+                        // Checking for OpenID Implicit Flow misconfiguration (missing nonce)
+                        if (nonceParameter==null) {
                             issues.add(
                                 new CustomScanIssue(
                                     baseRequestResponse.getHttpService(),
                                     helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                     new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                    "OpenID Implicit Flow Insecure Implementation Detected",
-                                    "This OpenID Implicit Flow implementation is inerently insecure because enables the transmission of "
-                                    +"the access token on the URL of HTTP GET requests.\n<br>.This behaviour is deprecated by OpenID specifications "
-                                    +"because exposes to leakages (i.e. via cache, traffic sniffing, etc.) and replay attacks of access tokens.\n<br>"
-                                    +"If the use of OpenID Implicit Flow is needed then is suggested to use the <code>request_mode</code> set to "
-                                    +"<b>form_post</b> which force to send access tokens in the body of HTTP POST requests, or to"
-                                    +"adopt the OpenID Implicit Flow which uses only the ID_Token (not exposing access tokens) "
-                                    +"by setting <code>response_type</code> parameter to <b>id_token</b>.\n<br>"
-                                    +"Note: the use of Implicit Flow is also considered insecure in Mobile application contexts.\n<br>"
+                                    "OpenID Implicit Flow without Nonce Parameter",
+                                    "The OpenID Implicit Flow is improperly implemented because the mandatory <code>nonce</code> is missing.\n<br><br>"
+                                    +"Based on OpenID specifications this parameter should be unguessable and unique per client session "
+                                    +"in order to provide a security mitigation against replay attacks.\n<br> Then the absence of the <code>nonce</code> "
+                                    +"parameter increases the attack surface of the OpenID service.\n<br>"
+                                    +"Note: the Implicit Flow should be avoided in Mobile application contexts because is inerently insecure.\n<br>"
                                     +"<br>References:<br>"
-                                    +"<a href=\"https://openid.net/specs/oauth-v2-form-post-response-mode-1_0.html\">https://openid.net/specs/oauth-v2-form-post-response-mode-1_0.html</a>",
+                                    +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#ImplicitAuthRequest\">https://openid.net/specs/openid-connect-core-1_0.html#ImplicitAuthRequest</a><br>"
+                                    +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes\">https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes</a>",
                                     "Medium",
                                     "Certain"
                                 )
                             );
-                        } else {
-                            
                         }
-                    }
 
-
-                // Checking for OpenID Hybrid Flow authorization requests
-                } else if ( (helpers.urlDecode(respType).equals("code id_token") || helpers.urlDecode(respType).equals("code token") || helpers.urlDecode(respType).equals("code id_token token")) ) {
-                    // Checking for Duplicate Code value issues on OpenID Hybrid Flow
-                    if (! GOTCODES.isEmpty()) {
-                        String respDate = getHttpHeaderValueFromList(respHeaders, "Date");
-                        if (getHttpHeaderValueFromList(respHeaders, "Date") == null) {
-                            // This is needed to avoid null values on respDate
-                            respDate = Long.toString(currentTimeStampMillis);
-                        }
-                        // Start searching of authorization code duplicates
-                        for (Map.Entry<String,List<String>> entry : GOTCODES.entrySet()) {
-                            List<String> codeList = entry.getValue();
-                            String codeDate = entry.getKey();
-                            for (String codeValue: codeList) {
-                                if (responseString.toLowerCase().contains(codeValue) & (! codeDate.equals(respDate))) {
-                                    // This Hybrid Flow response contains an already released Code
-                                    List<int[]> matches = getMatches(responseString.getBytes(), codeValue.getBytes());
-                                    issues.add(
-                                        new CustomScanIssue(
-                                            baseRequestResponse.getHttpService(),
-                                            helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
-                                            "OpenID Duplicate Authorization Code Detected",
-                                            "The Authorization Server releases duplicate values for <code>code</code> parameter "
-                                            +"during Hybrid Flow login procedure.\n<br>For security reasons the OpenID "
-                                            +"specifications recommend that authorization code must be unique for each user's session.\n<br>"
-                                            +"The response contains the following already released <code>code</code> value <b>"+codeValue+"</b>\n<br>"
-                                            +"Note: this issue should be <b>confirmed manually</b> by searching the duplicated authorization code "
-                                            +"values in the burp-proxy history.\n<br>"
-                                            +"<br>References:<br>"
-                                            +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#TokenRequestValidation\">https://openid.net/specs/openid-connect-core-1_0.html#TokenRequestValidation</a>",
-                                            "Medium",
-                                            "Firm"
-                                        )
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                    // Retrieving codes from OpenID Hybrid Flow responses body or Location header
-                    if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
-                        // Enumerate OpenID authorization codes returned by HTTP responses
-                        String dateCode = getHttpHeaderValueFromList(respHeaders, "Date");
-                        if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
-                            // This is needed to avoid null values on GOTCODES
-                            dateCode = Long.toString(currentTimeStampMillis);
-                        }
-                        List<String> foundCodes = new ArrayList<>();
-                        for (String pName : SECRETCODES) {
-                            if (! GOTCODES.containsKey(dateCode)) {
-                                foundCodes.addAll(getMatchingParams(pName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
-                                foundCodes.addAll(getMatchingParams(pName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
-                                foundCodes.addAll(getMatchingParams(pName, pName, respBody, "link"));
-                                // Remove duplicate codes foud in same request
-                                foundCodes = new ArrayList<>(new HashSet<>(foundCodes));
-                                if (!foundCodes.isEmpty()) {
-                                    GOTCODES.put(dateCode, foundCodes);
-                                }
-                            }
-                        }
-                    }
-
-                    // Checking for OpenID Hybrid Flow without anti-CSRF protection
-                    if ( (!reqQueryParam.containsKey("state")) || (stateParameter == null)) {
-                       issues.add(
-                           new CustomScanIssue(
-                               baseRequestResponse.getHttpService(),
-                               helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                               new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                               "OpenID Hybrid Flow without State Parameter",
-                               "The OpenID Hybrid Flow authorization request does not contains the <code>state</code> parameter.\n<br>"
-                               +"Based on OpenID specifications the use of a unpredictable and unique (per user's session) "
-                               +"<code>state</code> parameter, (generated from some private information about the user), "
-                               +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
-                               +"If this request does not have any other anti-CSRF protection then an attacker could manipulate "
-                               +"the OpeniD Flow and obtain access to other users' accounts.\n<br>"
-                               +"<br>References:<br>"
-                               +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
-                               "Medium",
-                               "Firm"
-                           )
-                       );
-                    } else {
-                        String stateValue = stateParameter.getValue();
-                        if (responseString.toLowerCase().contains(stateValue)) {
-                            // Checking for OpenID Hybrid Flow with Duplicate State value issues (potential constant state values)
-                            if (! GOTSTATES.isEmpty()) {
-                                String respDate = getHttpHeaderValueFromList(respHeaders, "Date");
-                                if (getHttpHeaderValueFromList(respHeaders, "Date") == null) {
-                                    // This is needed to avoid null values on respDate
-                                    respDate = Long.toString(currentTimeStampMillis);
-                                }
-                                // Start searching if last issued authorization code is a duplicated of already received codes
-                                for (Map.Entry<String,List<String>> entry : GOTSTATES.entrySet()) {
-                                    List<String> stateList = entry.getValue();
-                                    String stateDate = entry.getKey();
-                                    for (String stateVal: stateList) {
-                                        if (responseString.toLowerCase().contains(stateVal) & (! stateDate.equals(respDate))) {
-                                            // This Hybrid Flow response contains an already released State
-                                            List<int[]> matches = getMatches(responseString.getBytes(), stateVal.getBytes());
-                                            issues.add(
-                                                new CustomScanIssue(
-                                                    baseRequestResponse.getHttpService(),
-                                                    helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
-                                                    "OpenID Hybrid Flow Duplicate State Parameter Detected",
-                                                    "The OpenID Hybrid Flow seems using duplicate values for the <code>state</code> parameter "
-                                                    +"during login procedure.\nFor security reasons the OpenID.\n<br>"
-                                                    +"Based on OpenID specifications the use of a unpredictable and unique (per user's session) "
-                                                    +"<code>state</code> parameter, (generated from some private information about the user), "
-                                                    +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
-                                                    +"The authorization response contains the following already released <code>state</code> value <b>"+stateVal+"</b>\n<br>"
-                                                    +"Using constant values for the <code>state</code> parameter de-facto disables its anti-CSRF protection.\n"
-                                                    +"If the authorization request does not have any other anti-CSRF protection then an attacker could manipulate "
-                                                    +"the OpeniD Flow and obtain access to other users' accounts.\n<br>"
-                                                    +"Note: this issue should be <b>confirmed manually</b> by searching the duplicated <code>state</code> parameter values "
-                                                    +"in the burp-proxy history.\n<br>"
-                                                    +"<br>References:<br>"
-                                                    +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
-                                                    "Medium",
-                                                    "Tentative"
-                                                )
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Retrieving 'state' values from OpenID Hybrid Flow responses body or Location header
-                            if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
-                                // Enumerate OpenID authorization states returned by HTTP responses
-                                String dateState = getHttpHeaderValueFromList(respHeaders, "Date");
-                                if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
-                                    // This is needed to avoid null values on GOTSTATES
-                                    dateState = Long.toString(currentTimeStampMillis);
-                                }
-                                List<String> foundStates = new ArrayList<>();
-                                if (! GOTSTATES.containsKey(dateState)) {
-                                    foundStates.addAll(getMatchingParams("state", "state", respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
-                                    foundStates.addAll(getMatchingParams("state", "state", getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
-                                    foundStates.addAll(getMatchingParams("state", "state", respBody, "link"));
-                                    // Remove duplicate states foud in same request
-                                    foundStates = new ArrayList<>(new HashSet<>(foundStates));
-                                    if (!foundStates.isEmpty()) {
-                                        GOTSTATES.put(dateState, foundStates);
-                                    }
-                                }
-                            } else {
-                                // The response does not return the state parameter sent within the authorization request
-                                // This Hybrid Flow response contains an already released State
-                                List<int[]> matches = getMatches(requestString.getBytes(), stateValue.getBytes());
+                        // Checking for OpenID Implicit Flow Deprecated Implementation with access token in URL
+                        if (respType.equals("token") || helpers.urlDecode(respType).equals("id_token token")) {
+                            // If response_mode is set to form_post then the Implicit Flow is yet acceptable
+                            if ( respmodeParameter==null || (!respmodeParameter.getValue().equals("form_post")) ) {
+                                // Found dangerous implementation of OpenID Implicit Flow which exposes access tokens in URL
                                 issues.add(
                                     new CustomScanIssue(
                                         baseRequestResponse.getHttpService(),
                                         helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, matches, null) },
-                                        "OpenID Hybrid Flow State Parameter Mismatch Detected",
-                                        "The Authorization Server does not send in response the same <code>state</code> parameter received in the authorization reqest "
-                                        +"during Hybrid Flow login procedure.\n<br>"
-                                        +"Based on OpenID specifications the use of a unpredictable and unique (per user's session) "
-                                        +"<code>state</code> parameter, (generated from some private information about the user), "
-                                        +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
-                                        +"The response does not contains the <code>state</code> value <b>"+stateValue+"</b> sent within the authorization request\n<br>"
-                                        +"The <code>state</code> parameter provides a protection against CSRF attacks (as a sort of anti-CSRF token) "
-                                        +"for the OpenID Flow, then this misconfiguration disables it.\n<br>"
-                                        +"If the authorization request does not have any other anti-CSRF protection then an attacker could manipulate "
-                                        +"the OpeniD Flow and obtain access to other users' accounts.\n<br>"
+                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                        "OpenID Implicit Flow Insecure Implementation Detected",
+                                        "This OpenID Implicit Flow implementation is inerently insecure, because allows the transmission of "
+                                        +"secret tokens on the URL of HTTP GET requests.\n<br><br>.This behaviour is deprecated by OpenID specifications "
+                                        +"because exposes the secret tokens to leakages (i.e. via cache, traffic sniffing, etc.) and replay attacks.\n<br>"
+                                        +"If the use of OpenID Implicit Flow is needed then is suggested to use the <code>request_mode</code> set to "
+                                        +"<b>form_post</b> which force to send access tokens in the body of HTTP POST requests, or to"
+                                        +"adopt the OpenID Implicit Flow which uses only the ID_Token (not exposing access tokens) "
+                                        +"by setting <code>response_type</code> parameter to <b>id_token</b>.\n<br>"
+                                        +"Note: the use of Implicit Flow is also considered insecure in Mobile application contexts.\n<br>"
                                         +"<br>References:<br>"
-                                        +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
+                                        +"<a href=\"https://openid.net/specs/oauth-v2-form-post-response-mode-1_0.html\">https://openid.net/specs/oauth-v2-form-post-response-mode-1_0.html</a>",
                                         "Medium",
-                                        "Firm"
+                                        "Certain"
                                     )
                                 );
+                            } else {
+
                             }
                         }
-                    }
 
 
-                    // Checkibg for OpenID Hybrid Flow Misconfiguration on authorization responses
-                    // the OpenID authorization response have to return the 'code' parameter with at least one of 'acces_token' or 'id_token' parameters
-                    if ( (respInfo.getStatusCode()==200 || respInfo.getStatusCode()==302) & ( responseString.contains("code")) ) {
-                        if ( !responseString.contains("id_token") & !responseString.contains("access_token")) {
+                    // Checking for OpenID Hybrid Flow authorization requests
+                    } else if ( (helpers.urlDecode(respType).equals("code id_token") || helpers.urlDecode(respType).equals("code token") || helpers.urlDecode(respType).equals("code id_token token")) ) {
+                        // Checking for Duplicate Code value issues on OpenID Hybrid Flow
+                        if (! GOTCODES.isEmpty()) {
+                            String respDate = getHttpHeaderValueFromList(respHeaders, "Date");
+                            if (getHttpHeaderValueFromList(respHeaders, "Date") == null) {
+                                // This is needed to avoid null values on respDate
+                                respDate = Long.toString(currentTimeStampMillis);
+                            }
+                            // Start searching of authorization code duplicates
+                            for (Map.Entry<String,List<String>> entry : GOTCODES.entrySet()) {
+                                List<String> codeList = entry.getValue();
+                                String codeDate = entry.getKey();
+                                for (String codeValue: codeList) {
+                                    if (responseString.toLowerCase().contains(codeValue) & (! codeDate.equals(respDate))) {
+                                        // This Hybrid Flow response contains an already released Code
+                                        List<int[]> matches = getMatches(responseString.getBytes(), codeValue.getBytes());
+                                        issues.add(
+                                            new CustomScanIssue(
+                                                baseRequestResponse.getHttpService(),
+                                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
+                                                "OpenID Hybrid Flow Duplicate Code Value Detected",
+                                                "The Authorization Server seems issuing duplicate values for <code>code</code> parameter "
+                                                +"during the OpenID Hybrid Flow login procedure.\n<br><br>"
+                                                +"In details, the authorization response contains the following <code>code</code> value <b>"+codeValue+"</b> which was already released.\n<br><br>"
+                                                +"For security reasons the OpenID specifications recommend that authorization code must be unique for each user's session.\n<br>"
+                                                +"Note: this issue should be <b>confirmed manually</b> by searching the duplicated authorization code "
+                                                +"values in the burp-proxy history.\n<br>"
+                                                +"<br>References:<br>"
+                                                +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#TokenRequestValidation\">https://openid.net/specs/openid-connect-core-1_0.html#TokenRequestValidation</a>",
+                                                "Medium",
+                                                "Firm"
+                                            )
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    
+                        // Retrieving codes from OpenID Hybrid Flow responses body or Location header
+                        if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
+                            // Enumerate OpenID authorization codes returned by HTTP responses
+                            String dateCode = getHttpHeaderValueFromList(respHeaders, "Date");
+                            if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
+                                // This is needed to avoid null values on GOTCODES
+                                dateCode = Long.toString(currentTimeStampMillis);
+                            }
+                            List<String> foundCodes = new ArrayList<>();
+                            for (String pName : SECRETCODES) {
+                                // Check if already got code in same response (filtering by date)
+                                if (! GOTCODES.containsKey(dateCode)) {
+                                    foundCodes.addAll(getMatchingParams(pName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
+                                    foundCodes.addAll(getMatchingParams(pName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
+                                    foundCodes.addAll(getMatchingParams(pName, pName, respBody, "link"));
+                                    // Remove duplicate codes found in same response
+                                    foundCodes = new ArrayList<>(new HashSet<>(foundCodes));
+                                    if (!foundCodes.isEmpty()) {
+                                        GOTCODES.put(dateCode, foundCodes);
+                                        // Check for weak code issues (guessable values)
+                                        for (String fCode : foundCodes) {
+                                            if (fCode.length()<6) {
+                                                // Found a weak code
+                                                List<int[]> requestHighlights = new ArrayList<>(1);
+                                                int[] tokenOffset = new int[2];
+                                                int tokenStart = requestString.indexOf(fCode);
+                                                tokenOffset[0] = tokenStart;
+                                                tokenOffset[1] = tokenStart+fCode.length();
+                                                requestHighlights.add(tokenOffset);
+                                                issues.add(
+                                                    new CustomScanIssue(
+                                                        baseRequestResponse.getHttpService(),
+                                                        helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                                        "OpenID Weak Authorization Code Value Detected",
+                                                        "The OpenID Hybrid Flow presents a security misconfiguration, the Authorization Server releases weak <code>code</code> values "
+                                                        +"(insufficient entropy) during the login procedure.\n<br><br> "
+                                                        +"In details, the OpenID Flow response contains a <code>code</code> value of <b>"+fCode+"</b>.\n<br>"
+                                                        +"Based on OpenID specifications for security reasons the <code>code</code> must be unpredictable and unique "
+                                                        +"per client session.\n<br>Since the <code>code</code> value is guessable (insufficient entropy) "
+                                                        +"then the attack surface of the OpenID service increases.\n<br>"
+                                                        +"<br>References:<br>"
+                                                        +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
+                                                        "High",
+                                                        "Firm"
+                                                    )
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Checking for OpenID Hybrid Flow without anti-CSRF protection
+                        if ( (!reqQueryParam.containsKey("state")) || (stateParameter == null)) {
+                           issues.add(
+                               new CustomScanIssue(
+                                   baseRequestResponse.getHttpService(),
+                                   helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                   new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                   "OpenID Hybrid Flow without State Parameter",
+                                   "The OpenID Hybrid Flow authorization request does not contains the <code>state</code> parameter.\n<br><br>"
+                                   +"Based on OpenID specifications the use of a unpredictable and unique (per user's session) "
+                                   +"<code>state</code> parameter (generated from some private information about the user), "
+                                   +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
+                                   +"If this request does not have any other anti-CSRF protection then an attacker could manipulate "
+                                   +"the OpeniD Flow and obtain access to other user accounts.\n<br>"
+                                   +"<br>References:<br>"
+                                   +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
+                                   "Medium",
+                                   "Firm"
+                               )
+                           );
+                        } else {
+                            String stateValue = stateParameter.getValue();
+                            if (responseString.toLowerCase().contains(stateValue)) {
+                                // Checking for OpenID Hybrid Flow with Duplicate State value issues (potential constant state values)
+                                if (! GOTSTATES.isEmpty()) {
+                                    String respDate = getHttpHeaderValueFromList(respHeaders, "Date");
+                                    if (getHttpHeaderValueFromList(respHeaders, "Date") == null) {
+                                        // This is needed to avoid null values on respDate
+                                        respDate = Long.toString(currentTimeStampMillis);
+                                    }
+                                    // Start searching if last issued authorization code is a duplicated of already received codes
+                                    for (Map.Entry<String,List<String>> entry : GOTSTATES.entrySet()) {
+                                        List<String> stateList = entry.getValue();
+                                        String stateDate = entry.getKey();
+                                        for (String stateVal: stateList) {
+                                            if (responseString.toLowerCase().contains(stateVal) & (! stateDate.equals(respDate))) {
+                                                // This Hybrid Flow response contains an already released State
+                                                List<int[]> matches = getMatches(responseString.getBytes(), stateVal.getBytes());
+                                                issues.add(
+                                                    new CustomScanIssue(
+                                                        baseRequestResponse.getHttpService(),
+                                                        helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
+                                                        "OpenID Hybrid Flow Duplicate State Parameter Detected",
+                                                        "The OpenID Authorization Server seems issuing duplicate values for the <code>state</code> parameter, "
+                                                        +"during the login procedure.\n<br><br>"
+                                                        +"In details, the authorization response contains the following <code>state</code> value <b>"+stateVal+"</b> which was already released.\n<br><br>"
+                                                        +"Based on OpenID specifications the use of a unpredictable and unique (per user's session) "
+                                                        +"<code>state</code> parameter, (generated from some private information about the user), "
+                                                        +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
+                                                        +"The authorization response contains the following already released <code>state</code> value <b>"+stateVal+"</b>\n<br>"
+                                                        +"Using constant values for the <code>state</code> parameter de-facto disables its anti-CSRF protection.\n"
+                                                        +"If the authorization request does not have any other anti-CSRF protection then an attacker could manipulate "
+                                                        +"the OpeniD Flow and obtain access to other user accounts.\n<br>"
+                                                        +"Note: this issue should be <b>confirmed manually</b> by searching the duplicated <code>state</code> parameter values "
+                                                        +"in the burp-proxy history.\n<br>"
+                                                        +"<br>References:<br>"
+                                                        +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
+                                                        "Medium",
+                                                        "Tentative"
+                                                    )
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Retrieving 'state' values from OpenID Hybrid Flow responses body or Location header
+                                if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
+                                    // Enumerate OpenID authorization states returned by HTTP responses
+                                    String dateState = getHttpHeaderValueFromList(respHeaders, "Date");
+                                    if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
+                                        // This is needed to avoid null values on GOTSTATES
+                                        dateState = Long.toString(currentTimeStampMillis);
+                                    }
+                                    List<String> foundStates = new ArrayList<>();
+                                    // Check if already got state in same response (filtering by date)
+                                    if (! GOTSTATES.containsKey(dateState)) {
+                                        foundStates.addAll(getMatchingParams("state", "state", respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
+                                        foundStates.addAll(getMatchingParams("state", "state", getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
+                                        foundStates.addAll(getMatchingParams("state", "state", respBody, "link"));
+                                        // Remove duplicate states found in same response
+                                        foundStates = new ArrayList<>(new HashSet<>(foundStates));
+                                        if (!foundStates.isEmpty()) {
+                                            GOTSTATES.put(dateState, foundStates);
+                                        }
+                                    }
+                                } else {
+                                    // The response does not return the state parameter received within the authorization request
+                                    List<int[]> reqMatches = getMatches(requestString.getBytes(), stateValue.getBytes());
+                                    List<int[]> respMatches = getMatches(responseString.getBytes(), stateValue.getBytes());
+                                    if (respMatches.isEmpty()) {
+                                        issues.add(
+                                            new CustomScanIssue(
+                                                baseRequestResponse.getHttpService(),
+                                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, reqMatches, null) },
+                                                "OpenID Hybrid Flow State Parameter Mismatch Detected",
+                                                "The Authorization Server does not send in response the same <code>state</code> parameter "
+                                                +"received in the authorization request during the OpenID login procedure.\n<br><br>"
+                                                +"In details, the response does not contains the same <code>state</code> value <b>"+stateValue+"</b> sent within the authorization request\n<br><br>"
+                                                +"Based on OpenID specifications the use of a unpredictable and unique (per user's session) "
+                                                +"<code>state</code> parameter, (generated from some private information about the user), "
+                                                +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
+                                                +"Then for security reasons this mechanism requires that when the Authorization Server receives a <code>state</code> parameter "
+                                                +"its response must contain the same <code>state</code> value, then this misconfiguration disables its anti-CSRF protection.\n<br>"
+                                                +"If the authorization request does not have any other anti-CSRF protection then an attacker could manipulate "
+                                                +"the OpeniD Flow and obtain access to other user accounts.\n<br>"
+                                                +"<br>References:<br>"
+                                                +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
+                                                "Medium",
+                                                "Firm"
+                                            )
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+
+                        // Checking for OpenID Hybrid Flow Misconfiguration on authorization responses
+                        // the OpenID authorization response have to return the 'code' parameter with at least one of 'acces_token' or 'id_token' parameters
+                        if ( (respInfo.getStatusCode()==200 || respInfo.getStatusCode()==302) & ( responseString.contains("code")) ) {
+                            if ( !responseString.contains("id_token") & !responseString.contains("access_token")) {
+                                issues.add(
+                                    new CustomScanIssue(
+                                        baseRequestResponse.getHttpService(),
+                                        helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                        "OpenID Hybrid Flow Missing Tokens in Authorization Response",
+                                        "The OpenID Hybrid Flow presents a misconfiguration on the returned authorization response, because "
+                                        +"both the <code>id_token</code> and the <code>access_token</code> parameters are missing.\n<br><br>"
+                                        +"Based on OpenID Hybrid Flows specifications along with the <code>code</code> parameter the "
+                                        +"authorization response have to return: the parameter <code>id_token</code> "
+                                        +"when requests have the <code>response_type</code> parameter set to <b>code id_token token</b> "
+                                        +"or the parameter <code>access_token</code> when requests have the <code>response_type</code> parameter set "
+                                        +"to any of the values <b>code token</b> or <b>code id_token token</b>.\n<br> "
+                                        +"The information contained on the <code>id_token</code> tells to the "
+                                        +"Client Application that the user is authenticated (it can also give additional information "
+                                        +"like his username or locale).\n<br>The absence of the <code>id_token</code> and the "
+                                        +"<code>access_token</code> parameters increases the attack surface of the OpenID service.\n<br>"
+                                        +"<br>References:<br>"
+                                        +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#HybridFlowSteps\">https://openid.net/specs/openid-connect-core-1_0.html#HybridFlowSteps</a>",
+                                        "Medium",
+                                        "Certain"
+                                    )
+                                );   
+                            }                     
+                        }
+
+                        // Checking for OpenID Hybrid Flow misconfiguration (missing nonce)
+                        if (nonceParameter==null) {
                             issues.add(
                                 new CustomScanIssue(
                                     baseRequestResponse.getHttpService(),
                                     helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                     new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                    "OpenID Hybrid Flow Missing Tokens in Authorization Response",
-                                    "The OpenID Hybrid Flow presents a misconfiguration on the returned authorization response, "
-                                    +"in details both the <code>id_token</code> and the <code>access_token</code> parameters are missing.\n<br>"
-                                    +"Based on OpenID Hybrid Flows specifications along with the <code>code</code> parameter the "
-                                    +"authorization response have to return: the parameter <code>id_token</code> "
-                                    +"when requests have the <code>response_type</code> parameter set to <b>code id_token token</b> "
-                                    +"or the parameter <code>access_token</code> when requests have the <code>response_type</code> parameter set "
-                                    +"to any of the values <b>code token</b> or <b>code id_token token</b>.\n<br> "
-                                    +"The information contained on the <code>id_token</code> tells to the "
-                                    +"Client Application that the user is authenticated (it can also give additional information "
-                                    +"like his username or locale).\n<br>The absence of the <code>id_token</code> and the "
-                                    +"<code>access_token</code> parameters increases the attack surface of the OpenID service.\n<br>"
+                                    "OpenID Hybrid Flow without Nonce Parameter",
+                                    "The OpenID Hybrid Flow is improperly implemented because the mandatory <code>nonce</code> is missing.\n<br><br>"
+                                    +"Based on OpenID specifications this parameter should be unguessable and unique per "
+                                    +"client session in order to provide a security mitigation against replay attacks.\n<br>Then the absence of "
+                                    +"the <code>nonce</code> parameter increases the attack surface of the OpenID service.\n<br>"
                                     +"<br>References:<br>"
-                                    +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#HybridFlowSteps\">https://openid.net/specs/openid-connect-core-1_0.html#HybridFlowSteps</a>",
-                                    "Medium",
-                                    "Certain"
+                                    +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes\">https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes</a>",
+                                    "Low",
+                                    "Firm"
                                 )
-                            );   
-                        }                     
-                    }
+                            );
+                        }
 
-                    // Checking for OpenID Hybrid Flow misconfiguration (missing nonce)
-                    if (nonceParameter==null) {
+                        // Found OpenID Hybrid Flow 
                         issues.add(
                             new CustomScanIssue(
                                 baseRequestResponse.getHttpService(),
                                 helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                 new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                "OpenID Hybrid Flow without Nonce Parameter",
-                                "The OpenID Hybrid Flow is improperly implemented because the "
-                                +"mandatory <code>nonce</code> is missing.\n This parameter is randomic and unique per "
-                                +"client session in order to provide a security mitigation against replay attacks, its absence "
-                                +"increases the attack surface of the OpenID service.\n<br>"
-                                +"<br>References:<br>"
-                                +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes\">https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes</a>",
-                                "Low",
-                                "Firm"
+                                "OpenID Hybrid Flow Detected",
+                                "This is a login request of OpenID Hybrid Flow.",
+                                "Information",
+                                "Certain"
                             )
                         );
-                    }
-
-                    // Found OpenID Hybrid Flow 
-                    issues.add(
-                        new CustomScanIssue(
-                            baseRequestResponse.getHttpService(),
-                            helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                            "OpenID Hybrid Flow Detected",
-                            "This is a login request of OpenID Hybrid Flow.",
-                            "Information",
-                            "Certain"
-                        )
-                    );
 
 
 
-                // Checking OpenID Authorization Code Flow
-                } else if (respType.equals("code")) {
-                    // Found OpenID Authorization Code Flow 
-                    issues.add(
-                        new CustomScanIssue(
-                            baseRequestResponse.getHttpService(),
-                            helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                            "OpenID Authorization Code Flow Detected",
-                            "This is a login request of OpenID Authorization Code Flow.",
-                            "Information",
-                            "Certain"
-                        )
-                    );
-                    // Checking for Duplicate Code value issues on OpenID Authorization Code Flow
-                    if (! GOTCODES.isEmpty()) {
-                        String respDate = getHttpHeaderValueFromList(respHeaders, "Date");
-                        if (getHttpHeaderValueFromList(respHeaders, "Date") == null) {
-                            // This is needed to avoid null values on respDate
-                            respDate = Long.toString(currentTimeStampMillis);
-                        }
-                        // Start searching if last issued authorization code is a duplicated of already received codes
-                        for (Map.Entry<String,List<String>> entry : GOTCODES.entrySet()) {
-                            List<String> codeList = entry.getValue();
-                            String codeDate = entry.getKey();
-                            for (String codeValue: codeList) {
-                                if (responseString.toLowerCase().contains(codeValue) & (! codeDate.equals(respDate))) {
-                                    // This Authorization Code Flow response contains an already released Code
-                                    List<int[]> matches = getMatches(responseString.getBytes(), codeValue.getBytes());
-                                    issues.add(
-                                        new CustomScanIssue(
-                                            baseRequestResponse.getHttpService(),
-                                            helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
-                                            "OpenID Authorization Code Flow Duplicate Authorization Code Released",
-                                            "The Authorization Server releases duplicate values for <code>code</code> parameter "
-                                            +"during OpenID Authorization Code Flow login procedure.\n<br>For security reasons the OpenID "
-                                            +"specifications recommend that authorization code must be unique for each user's session.\n<br>"
-                                            +"The response contains the following already released <code>code</code> value <b>"+codeValue+"</b>\n<br>"
-                                            +"Note: this issue should be <b>confirmed manually</b> by searching the duplicated authorization code "
-                                            +"values in the burp-proxy history.\n<br>"
-                                            +"<br>References:<br>"
-                                            +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#TokenRequestValidation\">https://openid.net/specs/openid-connect-core-1_0.html#TokenRequestValidation</a>",
-                                            "Medium",
-                                            "Firm"
-                                        )
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    // Retrieving codes from OpenID Authorization Code Flow responses body or Location header
-                    if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
-                        // Enumerate OpenID authorization codes returned by HTTP responses
-                        String dateCode = getHttpHeaderValueFromList(respHeaders, "Date");
-                        if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
-                            // This is needed to avoid null values on GOTCODES
-                            dateCode = Long.toString(currentTimeStampMillis);
-                        }
-                        List<String> foundCodes = new ArrayList<>();
-                        for (String pName : SECRETCODES) {
-                            if (! GOTCODES.containsKey(dateCode)) {
-                                foundCodes.addAll(getMatchingParams(pName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
-                                foundCodes.addAll(getMatchingParams(pName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
-                                foundCodes.addAll(getMatchingParams(pName, pName, respBody, "link"));
-                                // Remove duplicate codes foud in same request
-                                foundCodes = new ArrayList<>(new HashSet<>(foundCodes));
-                                if (!foundCodes.isEmpty()) {
-                                    GOTCODES.put(dateCode, foundCodes);
-                                }
-                            }
-                        }
-                    }
-
-
-
-                    // Checking for OpenID Authorization Code Flow without anti-CSRF protection
-                    if ( (!reqQueryParam.containsKey("state")) || (stateParameter == null)) {
+                    // Checking OpenID Authorization Code Flow
+                    } else if (respType.equals("code")) {
+                        // Found OpenID Authorization Code Flow 
                         issues.add(
                             new CustomScanIssue(
                                 baseRequestResponse.getHttpService(),
                                 helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                 new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                "OpenID Authorization Code Flow without State Parameter Detected",
-                                "The OpenID Authorization Code Flow login request does not contains the <code>state</code> parameter.\n<br>"
-                                +"Based on OpenID specifications the use of a unpredictable and unique (per user's session) "
-                                +"<code>state</code> parameter, (generated from some private information about the user), "
-                                +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
-                                +"If this request does not have any other anti-CSRF protection then an attacker could manipulate "
-                                +"the OpeniD Flow and obtain access to other users' accounts.\n<br>"
-                                +"<br>References:<br>"
-                                +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
-                                "Medium",
-                                "Firm"
+                                "OpenID Authorization Code Flow Detected",
+                                "This is a login request of OpenID Authorization Code Flow.",
+                                "Information",
+                                "Certain"
                             )
                         );
-                    } else {
-                        String stateValue = stateParameter.getValue();
-                        if (responseString.toLowerCase().contains(stateValue)) {
-                            // Checking for OpenID Authorization Code Flow with Duplicate State value issues (potential constant state values)
-                            if (! GOTSTATES.isEmpty()) {
-                                String respDate = getHttpHeaderValueFromList(respHeaders, "Date");
-                                if (getHttpHeaderValueFromList(respHeaders, "Date") == null) {
-                                    // This is needed to avoid null values on respDate
-                                    respDate = Long.toString(currentTimeStampMillis);
+                        // Checking for Duplicate Code value issues on OpenID Authorization Code Flow
+                        if (! GOTCODES.isEmpty()) {
+                            String respDate = getHttpHeaderValueFromList(respHeaders, "Date");
+                            if (getHttpHeaderValueFromList(respHeaders, "Date") == null) {
+                                // This is needed to avoid null values on respDate
+                                respDate = Long.toString(currentTimeStampMillis);
+                            }
+                            // Start searching if last issued authorization code is a duplicated of already received codes
+                            for (Map.Entry<String,List<String>> entry : GOTCODES.entrySet()) {
+                                List<String> codeList = entry.getValue();
+                                String codeDate = entry.getKey();
+                                for (String codeValue: codeList) {
+                                    if (responseString.toLowerCase().contains(codeValue) & (! codeDate.equals(respDate))) {
+                                        // This Authorization Code Flow response contains an already released Code
+                                        List<int[]> matches = getMatches(responseString.getBytes(), codeValue.getBytes());
+                                        issues.add(
+                                            new CustomScanIssue(
+                                                baseRequestResponse.getHttpService(),
+                                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
+                                                "OpenID Authorization Code Flow Duplicate Code Value Detected",
+                                                "The Authorization Server releases duplicate values for <code>code</code> parameter "
+                                                +"during OpenID Authorization Code Flow login procedure.\n<br><br>"
+                                                +"In details, the authorization response contains the following <code>code</code> value <b>"+codeValue+"</b> which was already released.\n<br><br>"
+                                                +"For security reasons the OpenID specifications recommend that authorization code must be unique for each user's session.\n<br>"
+                                                +"Note: this issue should be <b>confirmed manually</b> by searching the duplicated authorization code "
+                                                +"values in the burp-proxy history.\n<br>"
+                                                +"<br>References:<br>"
+                                                +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#TokenRequestValidation\">https://openid.net/specs/openid-connect-core-1_0.html#TokenRequestValidation</a>",
+                                                "Medium",
+                                                "Firm"
+                                            )
+                                        );
+                                    }
                                 }
-                                // Start searching if last issued authorization code is a duplicated of already received codes
-                                for (Map.Entry<String,List<String>> entry : GOTSTATES.entrySet()) {
-                                    List<String> stateList = entry.getValue();
-                                    String stateDate = entry.getKey();
-                                    for (String stateVal: stateList) {
-                                        if (responseString.toLowerCase().contains(stateVal) & (! stateDate.equals(respDate))) {
-                                            // This Authorization Code Flow response contains an already released State
-                                            List<int[]> matches = getMatches(responseString.getBytes(), stateVal.getBytes());
-                                            issues.add(
-                                                new CustomScanIssue(
-                                                    baseRequestResponse.getHttpService(),
-                                                    helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
-                                                    "OpenID Authorization Code Flow Duplicate State Parameter Detected",
-                                                    "The OpenID Authorization Code Flow seems using duplicate values for the <code>state</code> parameter "
-                                                    +"during login procedure.\nFor security reasons the OpenID.\n<br>"
-                                                    +"Based on OpenID specifications the use of a unpredictable and unique (per user's session) "
-                                                    +"<code>state</code> parameter, (generated from some private information about the user), "
-                                                    +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
-                                                    +"The authorization response contains the following already released <code>state</code> value <b>"+stateVal+"</b>\n<br>"
-                                                    +"Using constant values for the <code>state</code> parameter de-facto disables its anti-CSRF protection.\n"
-                                                    +"If the authorization request does not have any other anti-CSRF protection then an attacker could manipulate "
-                                                    +"the OpeniD Flow and obtain access to other users' accounts.\n<br>"
-                                                    +"Note: this issue should be <b>confirmed manually</b> by searching the duplicated <code>state</code> parameter values "
-                                                    +"in the burp-proxy history.\n<br>"
-                                                    +"<br>References:<br>"
-                                                    +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
-                                                    "Medium",
-                                                    "Tentative"
-                                                )
-                                            );
+                            }
+                        }
+                        // Retrieving codes from OpenID Authorization Code Flow responses body or Location header
+                        if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
+                            // Enumerate OpenID authorization codes returned by HTTP responses
+                            String dateCode = getHttpHeaderValueFromList(respHeaders, "Date");
+                            if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
+                                // This is needed to avoid null values on GOTCODES
+                                dateCode = Long.toString(currentTimeStampMillis);
+                            }
+                            List<String> foundCodes = new ArrayList<>();
+                            for (String pName : SECRETCODES) {
+                                // Check if already got code in same response (filtering by date)
+                                if (! GOTCODES.containsKey(dateCode)) {
+                                    foundCodes.addAll(getMatchingParams(pName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
+                                    foundCodes.addAll(getMatchingParams(pName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
+                                    foundCodes.addAll(getMatchingParams(pName, pName, respBody, "link"));
+                                    // Remove duplicate codes found in same response
+                                    foundCodes = new ArrayList<>(new HashSet<>(foundCodes));
+                                    if (!foundCodes.isEmpty()) {
+                                        GOTCODES.put(dateCode, foundCodes);
+                                        // Check for weak code issues (guessable values)
+                                        for (String fCode : foundCodes) {
+                                            if (fCode.length()<6) {
+                                                // Found a weak code
+                                                List<int[]> requestHighlights = new ArrayList<>(1);
+                                                int[] tokenOffset = new int[2];
+                                                int tokenStart = requestString.indexOf(fCode);
+                                                tokenOffset[0] = tokenStart;
+                                                tokenOffset[1] = tokenStart+fCode.length();
+                                                requestHighlights.add(tokenOffset);
+                                                issues.add(
+                                                    new CustomScanIssue(
+                                                        baseRequestResponse.getHttpService(),
+                                                        helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                                        "OpenID Weak Authorization Code Value Detected",
+                                                        "The OpenID Authorization Code Flow presents a security misconfiguration, the Authorization Server releases weak <code>code</code> values "
+                                                        +"(insufficient entropy) during OpenID login procedure.\n<br><br> "
+                                                        +"In details, the OpenID Flow response contains a <code>code</code> value of <b>"+fCode+"</b>.\n<br>"
+                                                        +"Based on OpenID specifications for security reasons the <code>code</code> must be unpredictable and unique "
+                                                        +"per client session.\n<br>Since the <code>code</code> value is guessable (insufficient entropy) "
+                                                        +"then the attack surface of the OpenID service increases.\n<br>"
+                                                        +"<br>References:<br>"
+                                                        +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
+                                                        "High",
+                                                        "Firm"
+                                                    )
+                                                );
+                                            }
                                         }
                                     }
                                 }
                             }
-
-                            // Retrieving 'state' values from OpenID Authorization Code Flow responses body or Location header
-                            if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
-                                // Enumerate OpenID authorization states returned by HTTP responses
-                                String dateState = getHttpHeaderValueFromList(respHeaders, "Date");
-                                if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
-                                    // This is needed to avoid null values on GOTSTATES
-                                    dateState = Long.toString(currentTimeStampMillis);
-                                }
-                                List<String> foundStates = new ArrayList<>();
-                                if (! GOTSTATES.containsKey(dateState)) {
-                                    foundStates.addAll(getMatchingParams("state", "state", respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
-                                    foundStates.addAll(getMatchingParams("state", "state", getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
-                                    foundStates.addAll(getMatchingParams("state", "state", respBody, "link"));
-                                    // Remove duplicate states foud in same request
-                                    foundStates = new ArrayList<>(new HashSet<>(foundStates));
-                                    if (!foundStates.isEmpty()) {
-                                        GOTSTATES.put(dateState, foundStates);
-                                    }
-                                }
-                            } else {
-                                // The response does not return the state parameter sent within the authorization request
-                                // This Authorization Code Flow response contains an already released State
-                                List<int[]> matches = getMatches(requestString.getBytes(), stateValue.getBytes());
-                                issues.add(
-                                    new CustomScanIssue(
-                                        baseRequestResponse.getHttpService(),
-                                        helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, matches, null) },
-                                        "OpenID Authorization Code Flow State Parameter Mismatch Detected",
-                                        "The Authorization Server does not send in response the same <code>state</code> parameter received in the authorization reqest "
-                                        +"during Authorization Code Flow login procedure.\n<br>"
-                                        +"Based on OpenID specifications the use of a unpredictable and unique (per user's session) "
-                                        +"<code>state</code> parameter, (generated from some private information about the user), "
-                                        +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
-                                        +"The response does not contains the <code>state</code> value <b>"+stateValue+"</b> sent within the authorization request\n<br>"
-                                        +"The <code>state</code> parameter provides a protection against CSRF attacks (as a sort of anti-CSRF token) "
-                                        +"for the OpenID Flow, then this misconfiguration disables it.\n<br>"
-                                        +"If the authorization request does not have any other anti-CSRF protection then an attacker could manipulate "
-                                        +"the OpeniD Flow and obtain access to other users' accounts.\n<br>"
-                                        +"<br>References:<br>"
-                                        +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
-                                        "Medium",
-                                        "Firm"
-                                    )
-                                );
-                            }
                         }
-                    }
 
-                    // Checking for OpenID Authorization Code Flow misconfiguration (missing nonce)
-                    if (nonceParameter==null) {
-                        issues.add(
-                            new CustomScanIssue(
-                                baseRequestResponse.getHttpService(),
-                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                "OpenID Authorization Code Flow without Nonce Parameter",
-                                "The OpenID Authorization Code Flow is improperly implemented because the "
-                                +"mandatory <code>nonce</code> is missing.\n This parameter is randomic and unique per "
-                                +"client session in order to provide a security mitigation against replay attacks, its absence "
-                                +"increases the attack surface of the OpenID service.\n<br>"
-                                +"<br>References:<br>"
-                                +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes\">https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes</a>",
-                                "Low",
-                                "Firm"
-                            )
-                        );
-                    }
 
-                    // Checking for OpenID Authorization Code Flow without PKCE protection
-                    if ((!reqQueryParam.containsKey("code_challenge")) || (challengeParameter == null)) {
-                        issues.add(
-                            new CustomScanIssue(
-                                baseRequestResponse.getHttpService(),
-                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                "OpenID Authorization Code Flow without PKCE Protection Detected",
-                                "The Authorization Code Flow login request does not have the <code>code_challenge</code> parameter, "
-                                +"then is not implemented with PKCE protections against authorization code interception.\n<br>"
-                                +"In Mobile, Native desktop and SPA contexts is a security requirement to use OpenID Authorization Code Flow with PKCE extension "
-                                +"or alternatively to use OpenID Hybrid Flow.\n<br>"
-                                +"<br>References:<br>"
-                                +"<a href=\"https://openid.net/specs/openid-igov-oauth2-1_0-02.html#rfc.section.3.1.7\">https://openid.net/specs/openid-igov-oauth2-1_0-02.html#rfc.section.3.1.7</a>",
-                                "Medium",
-                                "Firm"
-                            )
-                        );
-                    // Checking for OpenID Authorization Code Flow PKCE misconfiguration
-                    } else if ((reqQueryParam.containsKey("code_challenge_method")) || (challengemethodParameter != null)) {
-                        if (reqQueryParam.get("code_challenge_method").equals("plain") || challengemethodParameter.getValue().equals("plain")) {
-                            List<int[]> matches = getMatches(requestString.getBytes(), "plain".getBytes());
+                        // Checking for OpenID Authorization Code Flow without anti-CSRF protection
+                        if ( (!reqQueryParam.containsKey("state")) || (stateParameter == null)) {
                             issues.add(
                                 new CustomScanIssue(
                                     baseRequestResponse.getHttpService(),
                                     helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, matches, null) },
-                                    "OpenID Authorization Code Flow with PKCE Plaintext",
-                                    "The Authorization Code Flow with PKCE is configured with the "
-                                    +"<code>code_challenge_method</code> parameter set to <b>plain</b>.\n<br>"
-                                    +"This means that the secret <code>code_verifier</code> value is sent plaintext as "
-                                    +"<code>code_challenge</code> parameter on authorization requests and "
-                                    +"then PKCE protections against authorization code interception attacks are de-facto disabled, because "
-                                    +"they are based on the secrecy of the <code>code_verifier</code> parameter sent within requests.\n<br>"
+                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                    "OpenID Authorization Code Flow without State Parameter Detected",
+                                    "The OpenID Authorization Code Flow login request does not contains the <code>state</code> parameter.\n<br>"
+                                    +"Based on OpenID specifications the use of a unpredictable and unique (per user's session) "
+                                    +"<code>state</code> parameter (generated from some private information about the user), "
+                                    +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
+                                    +"If this request does not have any other anti-CSRF protection then an attacker could manipulate "
+                                    +"the OpeniD Flow and obtain access to other user accounts.\n<br>"
+                                    +"<br>References:<br>"
+                                    +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
+                                    "Medium",
+                                    "Firm"
+                                )
+                            );
+                        } else {
+                            String stateValue = stateParameter.getValue();
+                            if (responseString.toLowerCase().contains(stateValue)) {
+                                // Checking for OpenID Authorization Code Flow with Duplicate State value issues (potential constant state values)
+                                if (! GOTSTATES.isEmpty()) {
+                                    String respDate = getHttpHeaderValueFromList(respHeaders, "Date");
+                                    if (getHttpHeaderValueFromList(respHeaders, "Date") == null) {
+                                        // This is needed to avoid null values on respDate
+                                        respDate = Long.toString(currentTimeStampMillis);
+                                    }
+                                    // Start searching if last issued authorization code is a duplicated of already received codes
+                                    for (Map.Entry<String,List<String>> entry : GOTSTATES.entrySet()) {
+                                        List<String> stateList = entry.getValue();
+                                        String stateDate = entry.getKey();
+                                        for (String stateVal: stateList) {
+                                            if (responseString.toLowerCase().contains(stateVal) & (! stateDate.equals(respDate))) {
+                                                // This Authorization Code Flow response contains an already released State
+                                                List<int[]> matches = getMatches(responseString.getBytes(), stateVal.getBytes());
+                                                issues.add(
+                                                    new CustomScanIssue(
+                                                        baseRequestResponse.getHttpService(),
+                                                        helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
+                                                        "OpenID Authorization Code Flow Duplicate State Parameter Detected",
+                                                        "The OpenID Authorization Server seems issuing duplicate values for the <code>state</code> parameter, "
+                                                        +"during the login procedure.\n<br><br>"
+                                                        +"In details, the authorization response contains the following <code>state</code> value <b>"+stateVal+"</b> which was already released.\n<br><br>"
+                                                        +"Based on OpenID specifications the use of a unpredictable and unique (per user's session) "
+                                                        +"<code>state</code> parameter, (generated from some private information about the user), "
+                                                        +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
+                                                        +"Using constant values for the <code>state</code> parameter de-facto disables its anti-CSRF protection.\n<br>"
+                                                        +"If the authorization request does not have any other anti-CSRF protection then an attacker could manipulate "
+                                                        +"the OpeniD Flow and obtain access to other user accounts.\n<br>"
+                                                        +"Note: this issue should be <b>confirmed manually</b> by searching the duplicated <code>state</code> parameter values "
+                                                        +"in the burp-proxy history.\n<br>"
+                                                        +"<br>References:<br>"
+                                                        +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
+                                                        "Medium",
+                                                        "Tentative"
+                                                    )
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Retrieving 'state' values from OpenID Authorization Code Flow responses body or Location header
+                                if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
+                                    // Enumerate OpenID authorization states returned by HTTP responses
+                                    String dateState = getHttpHeaderValueFromList(respHeaders, "Date");
+                                    if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
+                                        // This is needed to avoid null values on GOTSTATES
+                                        dateState = Long.toString(currentTimeStampMillis);
+                                    }
+                                    List<String> foundStates = new ArrayList<>();
+                                    // Check if already got state in same response (filtering by date)
+                                    if (! GOTSTATES.containsKey(dateState)) {
+                                        foundStates.addAll(getMatchingParams("state", "state", respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
+                                        foundStates.addAll(getMatchingParams("state", "state", getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
+                                        foundStates.addAll(getMatchingParams("state", "state", respBody, "link"));
+                                        // Remove duplicate states found in same request
+                                        foundStates = new ArrayList<>(new HashSet<>(foundStates));
+                                        if (!foundStates.isEmpty()) {
+                                            GOTSTATES.put(dateState, foundStates);
+                                        }
+                                    }
+                                } else {
+                                    // The response does not return the same state parameter received within the authorization request
+                                    List<int[]> reqMatches = getMatches(requestString.getBytes(), stateValue.getBytes());
+                                    List<int[]> respMatches = getMatches(responseString.getBytes(), stateValue.getBytes());
+                                    if (respMatches.isEmpty()) {
+                                        issues.add(
+                                            new CustomScanIssue(
+                                                baseRequestResponse.getHttpService(),
+                                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, reqMatches, null) },
+                                                "OpenID Authorization Code Flow State Parameter Mismatch Detected",
+                                                "The Authorization Server does not send in response the same <code>state</code> parameter "
+                                                +"received in the authorization request during the OpenID login procedure.\n<br><br>"
+                                                +"In details, the response does not contains the same <code>state</code> value <b>"+stateValue+"</b> sent within the authorization request\n<br><br>"
+                                                +"Based on OpenID specifications the use of a unpredictable and unique (per user's session) "
+                                                +"<code>state</code> parameter, (generated from some private information about the user), "
+                                                +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
+                                                +"Then for security reasons this mechanism requires that when the Authorization Server receives a <code>state</code> parameter "
+                                                +"its response must contain the same <code>state</code> value, then this misconfiguration disables its anti-CSRF protection.\n<br>"
+                                                +"If the authorization request does not have any other anti-CSRF protection then an attacker could manipulate "
+                                                +"the OpeniD Flow and obtain access to other user accounts.\n<br>"
+                                                +"<br>References:<br>"
+                                                +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
+                                                "Medium",
+                                                "Firm"
+                                            )
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        // Checking for OpenID Authorization Code Flow misconfiguration (missing nonce)
+                        if (nonceParameter==null) {
+                            issues.add(
+                                new CustomScanIssue(
+                                    baseRequestResponse.getHttpService(),
+                                    helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                    "OpenID Authorization Code Flow without Nonce Parameter",
+                                    "The OpenID Authorization Code Flow is improperly implemented because the mandatory <code>nonce</code> is missing.\n<br><br>"
+                                    +"Based on OpenID specification this parameter should be unguessable and unique per "
+                                    +"client session in order to provide a security mitigation against replay attacks.\n<br>Then the absence of "
+                                    +"the <code>nonce</code> parameter increases the attack surface of the OpenID service.\n<br>"
+                                    +"<br>References:<br>"
+                                    +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes\">https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes</a>",
+                                    "Low",
+                                    "Firm"
+                                )
+                            );
+                        }
+
+                        // Checking for OpenID Authorization Code Flow without PKCE protection
+                        if ((!reqQueryParam.containsKey("code_challenge")) || (challengeParameter == null)) {
+                            issues.add(
+                                new CustomScanIssue(
+                                    baseRequestResponse.getHttpService(),
+                                    helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                    "OpenID Authorization Code Flow without PKCE Protection Detected",
+                                    "The Authorization Code Flow login request does not have the <code>code_challenge</code> parameter, "
+                                    +"then there is not any PKCE protections against authorization code interception.\n<br>"
                                     +"In Mobile, Native desktop and SPA contexts is a security requirement to use OpenID Authorization Code Flow with PKCE extension "
                                     +"or alternatively to use OpenID Hybrid Flow.\n<br>"
                                     +"<br>References:<br>"
@@ -1263,325 +1455,25 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                     "Firm"
                                 )
                             );
-                        }
-                    }
-                }
-            }
-
-        // Starting passive checks for OAUTHv2 issues
-        } else {
-            // First search for OAUTHv2 Implicit or Authorization Code Flows
-            if ( ((reqQueryParam!=null & reqQueryParam.containsKey("client_id") & reqQueryParam.containsKey("response_type")) || 
-            ( reqParam!=null & (clientidParameter != null) & (resptypeParameter!=null))) ) {
-                stdout.println("[+] Passive Scan: OAUTHv2 Implicit or Authorization Code Flows detected");
-                if (reqQueryParam.containsKey("redirect_uri") & reqQueryParam.containsKey("response_type")) {
-                    respType = reqQueryParam.get("response_type");
-                    redirUri = reqQueryParam.get("redirect_uri");
-                } else if ((redirParameter != null) & (resptypeParameter!=null)) {
-                    respType = resptypeParameter.getValue();
-                    redirUri = redirParameter.getValue();
-                }
-
-
-                // Check for weak OAUTHv2 state values (i.e. insufficient length, only alphabetic, only numeric, etc.)
-                if (stateParameter!=null) {
-                    String stateValue = stateParameter.getValue();
-                    if ( (stateValue.length() < 5) || ( (stateValue.length() < 7) & ((stateValue.matches("[a-zA-Z]+")) || (stateValue.matches("[0-9]+")))) ) {
-                        List<int[]> requestHighlights = new ArrayList<>(1);
-                        int[] stateOffset = new int[2];
-                        int stateStart = requestString.indexOf(stateValue);
-                        stateOffset[0] = stateStart;
-                        stateOffset[1] = stateStart+stateValue.length();
-                        requestHighlights.add(stateOffset);
-                        issues.add(
-                            new CustomScanIssue(
-                                baseRequestResponse.getHttpService(),
-                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
-                                "OAUTHv2 Flow with Weak State Parameter",
-                                "The OAUTHv2 Flow presents a security misconfiguration because is using weak values for"
-                                +"the <code>state</code> parameter.\n<br> "
-                                +"In details the OAUTHv2 Flow request contains a <code>state</code> value of <b>"+stateValue+"</b>.\n<br>"
-                                +"Based on OAUTHv2 specifications the use of a unpredictable and unique (per user's session) "
-                                +"<code>state</code> parameter, (generated from some private information about the user), "
-                                +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
-                                +"When the <code>state</code> value is guessable (insufficient entropy) "
-                                +"then the attack surface of the OAUTHv2 service increases.\n<br>"
-                                +"<br>References:<br>"
-                                +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6819#page-13\">https://datatracker.ietf.org/doc/html/rfc6819#page-13</a>",
-                                "Low",
-                                "Firm"
-                            )
-                        );
-                    }
-                }
-
-
-                // Checking for OAUTHv2 Flow with 'request_uri' parameter
-                if (requesturiParameter!=null) {
-                    issues.add(
-                        new CustomScanIssue(
-                            baseRequestResponse.getHttpService(),
-                            helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                            "OAUTHv2 Flow with Request_Uri Parameter Detected",
-                            "The OAUTHv2 Flow uses the parameter <code>request_uri</code> to "
-                            +"enable the retrieving of client's Request-Object via a URI reference to it.\n<br>"
-                            +"Based on OAUTHv2 specifications the value of the <code>request_uri</code> parameter "
-                            +"is set to an URI pointing to a server hosting a JWT which contains the client's parameter values. "
-                            +"In this way the OAUTHv2 Provider can fetch the provided URI and retrieve the Request-Object "
-                            +"by parsing the JWT contents.\n<br>"
-                            +"For security reasons the URI value of <code>request_uri</code> parameter should be carefully validated "
-                            +"at server-side, otherwise a threat agent could be able to lead the OAUTHv2 Provider to interact with "
-                            +"an arbitrary server under is control and then potentially exploit SSRF vulnerabilities.\n<br>"
-                            +"As mitigation the OAUTHv2 Provider should define a whitelist of allowed URI values (pre-registered "
-                            +"during the client registration process) for the <code>request_uri</code> parameter.\n<br>"
-                            +"<br>References:<br>"
-                            +"<a href=\"https://tools.ietf.org/html/draft-lodderstedt-oauth-par\">https://tools.ietf.org/html/draft-lodderstedt-oauth-par</a>"
-                            +"<a href=\"https://portswigger.net/research/hidden-oauth-attack-vectors\">https://portswigger.net/research/hidden-oauth-attack-vectors</a>",
-                            "Information",
-                            "Certain"
-                        )
-                    );
-                }
-
-
-                // Checking for OAUTHv2 Implicit Flow
-                if (respType.equals("token")) {
-                    // Found the insecure OAUTHv2 Implicit Flow 
-                    issues.add(
-                        new CustomScanIssue(
-                            baseRequestResponse.getHttpService(),
-                            helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                            "OAUTHv2 Implicit Flow Insecure Implementation Detected",
-                            "The OAUTHv2 Implicit Flow is considered inerently insecure because enables the transmission of "
-                            +"access tokens in the URL of HTTP GET requests.\n<br>.This behaviour is deprecated by OAUTHv2 specifications "
-                            +"since it exposes to various security issues as leakages (i.e. via cache, traffic sniffing, etc.) and replay "
-                            +"attacks of access tokens.\n<br>It is suggested to adopt OAUTHv2 Authorization Code Flow, or "
-                            +"any of the specific OpenID Implicyt Flow implementations (as <b>id_token</b> or <b>form_post</b>).\n<br>"
-                            +"Note: the use of Implicit Flow is also considered insecure in Mobile application contexts.\n<br>"
-                            +"<br>References:<br>"
-                            +"<a href=\"https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics-09#page-5\">https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics-09#page-5</a>"
-                            +"<a href=\"https://tools.ietf.org/id/draft-parecki-oauth-browser-based-apps-02.txt\">https://tools.ietf.org/id/draft-parecki-oauth-browser-based-apps-02.txt</a>",
-                            "Medium",
-                            "Certain"
-                        )
-                    );
-
-
-                    // Checking for Refresh token included in login response (Location header or body) that is discouraged for Implicit Flow
-                    foundRefresh = false;
-                    if (respBody.toLowerCase().contains("refresh")) {
-                            foundRefresh = true;
-                    } else if (getHttpHeaderValueFromList(respHeaders, "Location")!=null) {
-                        if (getHttpHeaderValueFromList(respHeaders, "Location").toLowerCase().contains("refresh")) {
-                            foundRefresh = true;
-                        }
-                    }
-                    if (foundRefresh) {
-                        issues.add(
-                            new CustomScanIssue(
-                                baseRequestResponse.getHttpService(),
-                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                "OAUTHv2 Implicit Flow Improper Release of Refresh Token",
-                                "The Resource Server releases a refresh token after successful Implicit Flow login. "
-                                +"This behaviour is deprecated by OAUTHv2 specifications for Implicit Flow, also consider that "
-                                +"the use of OAUTHv2 Implicit Flow is insecure and should be avoided.\n<br>"
-                                +"<br>References:<br>"
-                                +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6749#section-4.2\">https://datatracker.ietf.org/doc/html/rfc6749#section-4.2</a>"
-                                +"<a href=\"https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics-09#page-5\">https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics-09#page-5</a>"
-                                +"<a href=\"https://tools.ietf.org/id/draft-parecki-oauth-browser-based-apps-02.txt\">https://tools.ietf.org/id/draft-parecki-oauth-browser-based-apps-02.txt</a>",
-                                "Medium",
-                                "Certain"
-                            )
-                        );
-                    }
-                
-                // Checking for OAUTHv2 Authorization Code Flow
-                } else if (respType.equals("code")) {
-                    // Found OAUTHv2 Authorization Code Flow 
-                    issues.add(
-                        new CustomScanIssue(
-                            baseRequestResponse.getHttpService(),
-                            helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                            "OAUTHv2 Authorization Code Flow Detected",
-                            "This is a login request of OAUTHv2 Authorization Code Flow.",
-                            "Information",
-                            "Certain"
-                        )
-                    );
-                    // Checking for Duplicate Code value issues on OAUTHv2 Authorization Code Flow
-                    if (! GOTCODES.isEmpty()) {
-                        String respDate = getHttpHeaderValueFromList(respHeaders, "Date");
-                        if (getHttpHeaderValueFromList(respHeaders, "Date") == null) {
-                            // This is needed to avoid null values on respDate
-                            respDate = Long.toString(currentTimeStampMillis);
-                        }
-                        // Start searching if last issued authorization code is a duplicated of already received codes
-                        for (Map.Entry<String,List<String>> entry : GOTCODES.entrySet()) {
-                            List<String> codeList = entry.getValue();
-                            String codeDate = entry.getKey();
-                            for (String codeValue : codeList) {
-                                if (responseString.toLowerCase().contains(codeValue) & (! codeDate.equals(respDate))) {
-                                    // This Authorization Code Flow response contains an already released Code
-                                    List<int[]> matches = getMatches(responseString.getBytes(), codeValue.getBytes());
-                                    issues.add(
-                                        new CustomScanIssue(
-                                            baseRequestResponse.getHttpService(),
-                                            helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
-                                            "OAUTHv2 Authorization Code Flow Duplicate Authorization Code Released",
-                                            "The Authorization Server releases duplicate values for <code>code</code> parameter "
-                                            +"during OAUTHv2 Authorization Code Flow login procedure.\n<br>For security reasons the OAUTHv2 "
-                                            +"specifications recommend that authorization code must be unique for each user's session.\n<br>"
-                                            +"The response contains the following already released <code>code</code> value <b>"+codeValue+"</b>\n<br>"
-                                            +"Note: this issue should be <b>confirmed manually</b> by searching the duplicated authorization code "
-                                            +"values in the burp-proxy history.\n<br>"
-                                            +"<br>References:<br>"
-                                            +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2\">https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2</a>",
-                                            "Medium",
-                                            "Firm"
-                                        )
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                    // Retrieving codes from OAUTHv2 Authorization Code Flow responses body or Location header
-                    if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
-                        // Enumerate OAUTHv2 authorization codes returned by HTTP responses
-                        String dateCode = getHttpHeaderValueFromList(respHeaders, "Date");
-                        if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
-                            // This is needed to avoid null values on GOTCODES
-                            dateCode = Long.toString(currentTimeStampMillis);
-                        }
-                        List<String> foundCodes = new ArrayList<>();
-                        for (String pName : SECRETCODES) {
-                            if (! GOTCODES.containsKey(dateCode)) {
-                                foundCodes.addAll(getMatchingParams(pName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
-                                foundCodes.addAll(getMatchingParams(pName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
-                                foundCodes.addAll(getMatchingParams(pName, pName, respBody, "link"));
-                                // Remove duplicate codes foud in same request
-                                foundCodes = new ArrayList<>(new HashSet<>(foundCodes));
-                                if (!foundCodes.isEmpty()) {
-                                    GOTCODES.put(dateCode, foundCodes);
-                                }
-                            }
-                        }
-                    }
-
-
-
-                    // Checking for OAUTHv2 Authorization Code Flow without anti-CSRF protection            
-                    if ( (!reqQueryParam.containsKey("state")) || (stateParameter == null)) {
-                        issues.add(
-                            new CustomScanIssue(
-                                baseRequestResponse.getHttpService(),
-                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                "OAUTHv2 Authorization Code Flow without State Parameter Detected",
-                                "The Authorization Code Flow login request does not have the <code>state</code> parameter.\n<br>"
-                                +"The use of a unpredictable and unique (per user's session) <code>state</code> parameter value, "
-                                +"provides a protection against CSRF attacks (as an anti-CSRF token) during Authorization Code Flow login procedure.\n<br>"
-                                +"If the authorization request does not have any other anti-CSRF protection then an attacker could manipulate "
-                                +"the OAUTHv2 Flow and obtain access to other users' accounts.\n<br>"
-                                +"<br>References:<br>"
-                                +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6819#page-13\">https://datatracker.ietf.org/doc/html/rfc6819#page-13</a>",
-                                "Medium",
-                                "Firm"
-                            )
-                        );
-                    } else {
-                        // Go here when OAUTHv2 Authorization Code request contains a 'state' parameter 
-                        String stateValue = stateParameter.getValue();
-                        if (responseString.toLowerCase().contains(stateValue)) {
-                            // Checking for OAUTHv2 Authorization Code Flow with Duplicate State value issues (potential constant state values)
-                            if (! GOTSTATES.isEmpty()) {
-                                String respDate = getHttpHeaderValueFromList(respHeaders, "Date");
-                                if (getHttpHeaderValueFromList(respHeaders, "Date") == null) {
-                                    // This is needed to avoid null values on respDate
-                                    respDate = Long.toString(currentTimeStampMillis);
-                                }
-                                // Start searching if last issued authorization code is a duplicated of already received codes
-                                for (Map.Entry<String,List<String>> entry : GOTSTATES.entrySet()) {
-                                    List<String> stateList = entry.getValue();
-                                    String stateDate = entry.getKey();
-                                    for (String stateVal: stateList) {
-                                        if (responseString.toLowerCase().contains(stateVal) & (! stateDate.equals(respDate))) {
-                                            // This Authorization Code Flow response contains an already released State
-                                            List<int[]> matches = getMatches(responseString.getBytes(), stateVal.getBytes());
-                                            issues.add(
-                                                new CustomScanIssue(
-                                                    baseRequestResponse.getHttpService(),
-                                                    helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
-                                                    "OAUTHv2 Authorization Code Flow Duplicate State Parameter Detected",
-                                                    "The OAUTHv2 Authorization Code Flow seems using duplicate values for the <code>state</code> parameter "
-                                                    +"during login procedure.\nFor security reasons the OAUTHv2.\n<br>"
-                                                    +"Based on OAUTHv2 specifications the use of a unpredictable and unique (per user's session) "
-                                                    +"<code>state</code> parameter, (generated from some private information about the user), "
-                                                    +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
-                                                    +"The authorization response contains the following already released <code>state</code> value <b>"+stateVal+"</b>\n<br>"
-                                                    +"Using constant values for the <code>state</code> parameter de-facto disables its anti-CSRF protection.\n"
-                                                    +"If the authorization request does not have any other anti-CSRF protection then an attacker could manipulate "
-                                                    +"the OAUTHv2 Flow and obtain access to other users' accounts.\n<br>"
-                                                    +"Note: this issue should be <b>confirmed manually</b> by searching the duplicated <code>state</code> parameter values "
-                                                    +"in the burp-proxy history.\n<br>"
-                                                    +"<br>References:<br>"
-                                                    +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6819#page-13\">https://datatracker.ietf.org/doc/html/rfc6819#page-13</a>",
-                                                    "Medium",
-                                                    "Tentative"
-                                                )
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Retrieving 'state' values from OAUTHv2 Authorization Code Flow responses body or Location header
-                            if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
-                                // Enumerate OAUTHv2 authorization states returned by HTTP responses
-                                String dateState = getHttpHeaderValueFromList(respHeaders, "Date");
-                                if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
-                                    // This is needed to avoid null values on GOTSTATES
-                                    dateState = Long.toString(currentTimeStampMillis);
-                                }
-                                List<String> foundStates = new ArrayList<>();
-                                if (! GOTSTATES.containsKey(dateState)) {
-                                    foundStates.addAll(getMatchingParams("state", "state", respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
-                                    foundStates.addAll(getMatchingParams("state", "state", getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
-                                    foundStates.addAll(getMatchingParams("state", "state", respBody, "link"));
-                                    // Remove duplicate states foud in same request
-                                    foundStates = new ArrayList<>(new HashSet<>(foundStates));
-                                    if (!foundStates.isEmpty()) {
-                                        GOTSTATES.put(dateState, foundStates);
-                                    }
-                                }
-                            } else {
-                                // The Authorization Code Flow response does not return the state parameter sent within the authorization request
-                                List<int[]> matches = getMatches(requestString.getBytes(), stateValue.getBytes());
+                        // Checking for OpenID Authorization Code Flow PKCE misconfiguration
+                        } else if ((reqQueryParam.containsKey("code_challenge_method")) || (challengemethodParameter != null)) {
+                            if (reqQueryParam.get("code_challenge_method").equals("plain") || challengemethodParameter.getValue().equals("plain")) {
+                                List<int[]> matches = getMatches(requestString.getBytes(), "plain".getBytes());
                                 issues.add(
                                     new CustomScanIssue(
                                         baseRequestResponse.getHttpService(),
                                         helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                         new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, matches, null) },
-                                        "OAUTHv2 Authorization Code Flow State Parameter Mismatch Detected",
-                                        "The Authorization Server does not send in response the same <code>state</code> parameter received in the authorization reqest "
-                                        +"during Authorization Code Flow login procedure.\n<br>"
-                                        +"The authorization response does not contains the <code>state</code> value <b>"+stateValue+"</b> sent within the authorization request\n<br>"
-                                        +"Based on OAUTHv2 specifications the use of a unpredictable and unique (per user's session) "
-                                        +"<code>state</code> parameter (generated from some private information about the user), "
-                                        +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
-                                        +"Then for security reasons this mechanism requires that when the Authorization Server receives a <code>state</code> parameter "
-                                        +"its response must contain the same <code>state</code> value, then this misconfiguration disables its anti-CSRF protection.\n<br>"
-                                        +"If the authorization request does not have any other anti-CSRF protection  then an attacker could manipulate "
-                                        +"the OAUTHv2 Flow and obtain access to other users' accounts.\n<br>"
+                                        "OpenID Authorization Code Flow with PKCE Plaintext",
+                                        "The Authorization Code Flow with PKCE is configured with the <code>code_challenge_method</code> parameter set to <b>plain</b>.\n<br><br>"
+                                        +"This means that the secret <code>code_verifier</code> value is sent plaintext as "
+                                        +"<code>code_challenge</code> parameter on authorization requests and "
+                                        +"then PKCE protections against authorization code interception attacks are de-facto disabled. In fact "
+                                        +"they are based on the secrecy of the <code>code_verifier</code> parameter sent within requests.\n<br>"
+                                        +"In Mobile, Native desktop and SPA contexts is a security requirement to use OpenID Authorization Code Flow with PKCE extension "
+                                        +"or alternatively to use OpenID Hybrid Flow.\n<br>"
                                         +"<br>References:<br>"
-                                        +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6819#page-13\">https://datatracker.ietf.org/doc/html/rfc6819#page-13</a>",
+                                        +"<a href=\"https://openid.net/specs/openid-igov-oauth2-1_0-02.html#rfc.section.3.1.7\">https://openid.net/specs/openid-igov-oauth2-1_0-02.html#rfc.section.3.1.7</a>",
                                         "Medium",
                                         "Firm"
                                     )
@@ -1589,44 +1481,383 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                             }
                         }
                     }
+                }
 
 
+            // Go here for passive checks for OAUTHv2 issues
+            } else {
+                // First search for OAUTHv2 Implicit or Authorization Code Flows
+                if ( ((reqQueryParam!=null & reqQueryParam.containsKey("client_id") & reqQueryParam.containsKey("response_type")) || 
+                ( reqParam!=null & (clientidParameter != null) & (resptypeParameter!=null))) ) {
+                    stdout.println("[+] Passive Scan: OAUTHv2 Implicit or Authorization Code Flows detected");
+                    if (reqQueryParam.containsKey("redirect_uri") & reqQueryParam.containsKey("response_type")) {
+                        respType = reqQueryParam.get("response_type");
+                        redirUri = reqQueryParam.get("redirect_uri");
+                    } else if ((redirParameter != null) & (resptypeParameter!=null)) {
+                        respType = resptypeParameter.getValue();
+                        redirUri = redirParameter.getValue();
+                    }
 
 
-                    // Checkinf for OAUTHv2 Authorization Code Flow without PKCE protection
-                    if ((!reqQueryParam.containsKey("code_challenge")) || (challengeParameter == null)) {
+                    // Check for weak OAUTHv2 state values (i.e. insufficient length, only alphabetic, only numeric, etc.)
+                    if (stateParameter!=null) {
+                        String stateValue = stateParameter.getValue();
+                        if ( (stateValue.length() < 5) || ( (stateValue.length() < 7) & ((stateValue.matches("[a-zA-Z]+")) || (stateValue.matches("[0-9]+")))) ) {
+                            List<int[]> requestHighlights = new ArrayList<>(1);
+                            int[] stateOffset = new int[2];
+                            int stateStart = requestString.indexOf(stateValue);
+                            stateOffset[0] = stateStart;
+                            stateOffset[1] = stateStart+stateValue.length();
+                            requestHighlights.add(stateOffset);
+                            issues.add(
+                                new CustomScanIssue(
+                                    baseRequestResponse.getHttpService(),
+                                    helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                    "OAUTHv2 Flow with Weak State Parameter",
+                                    "The OAUTHv2 Flow presents a security misconfiguration because is using weak values for"
+                                    +"the <code>state</code> parameter.\n<br> "
+                                    +"In details, the OAUTHv2 Flow request contains a <code>state</code> value of <b>"+stateValue+"</b>.\n<br>"
+                                    +"Based on OAUTHv2 specifications the use of a unpredictable and unique (per user's session) "
+                                    +"<code>state</code> parameter, (generated from some private information about the user), "
+                                    +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
+                                    +"When the <code>state</code> value is guessable (insufficient entropy) "
+                                    +"then the attack surface of the OAUTHv2 service increases.\n<br>"
+                                    +"<br>References:<br>"
+                                    +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6819#page-13\">https://datatracker.ietf.org/doc/html/rfc6819#page-13</a>",
+                                    "Low",
+                                    "Firm"
+                                )
+                            );
+                        }
+                    }
+
+
+                    // Checking for OAUTHv2 Flow with 'request_uri' parameter
+                    if (requesturiParameter!=null) {
+                        String reqUriValue = requesturiParameter.getValue();
+                        List<int[]> matches = getMatches(requestString.getBytes(), reqUriValue.getBytes());
+                        issues.add(
+                            new CustomScanIssue(
+                                baseRequestResponse.getHttpService(),
+                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, matches, null) },
+                                "OAUTHv2 Flow with Request_Uri Parameter Detected",
+                                "The OAUTHv2 Flow uses the parameter <code>request_uri</code> set to <b>"+reqUriValue+"</b> in order to"
+                                +"enable the retrieving of client's Request-Object via a URI reference to it.\n<br><br>"
+                                +"Based on OAUTHv2 specifications the value of the <code>request_uri</code> parameter "
+                                +"is set to an URI pointing to a server hosting a JWT which contains the client's parameter values. "
+                                +"In this way the OAUTHv2 Provider can fetch the provided URI and retrieve the Request-Object "
+                                +"by parsing the JWT contents.\n<br>"
+                                +"For security reasons the URI value of <code>request_uri</code> parameter should be carefully validated "
+                                +"at server-side, otherwise a threat agent could be able to lead the OAUTHv2 Provider to interact with "
+                                +"an arbitrary server under is control and then potentially exploit SSRF vulnerabilities.\n<br>"
+                                +"As mitigation the OAUTHv2 Provider should define a whitelist of allowed URI values (pre-registered "
+                                +"during the client registration process) for the <code>request_uri</code> parameter.\n<br>"
+                                +"<br>References:<br>"
+                                +"<a href=\"https://tools.ietf.org/html/draft-lodderstedt-oauth-par\">https://tools.ietf.org/html/draft-lodderstedt-oauth-par</a><br>"
+                                +"<a href=\"https://portswigger.net/research/hidden-oauth-attack-vectors\">https://portswigger.net/research/hidden-oauth-attack-vectors</a>",
+                                "Information",
+                                "Certain"
+                            )
+                        );
+                    }
+
+
+                    // Checking for OAUTHv2 Implicit Flow
+                    if (respType.equals("token")) {
+                        // Found the insecure OAUTHv2 Implicit Flow 
                         issues.add(
                             new CustomScanIssue(
                                 baseRequestResponse.getHttpService(),
                                 helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                 new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                "OAUTHv2 Authorization Code Flow without PKCE Protection",
-                                "The Authorization Code Flow login request does not have the <code>code_challenge</code> parameter, "
-                                +"then is not implemented with PKCE protections against authorization code interception.\n<br>"
-                                +"The OAUTHv2 Authorization Code Flow with PKCE provides protection against authorization code interception attacks, "
-                                +"and is a security requirement on Mobile contexts.\n<br>"
-                                +"In Mobile, Native desktop and SPA contexts is a security requirement to use OAUTHv2 Authorization Code Flow with PKCE extension.\n<br>"
+                                "OAUTHv2 Implicit Flow Insecure Implementation Detected",
+                                "The OAUTHv2 Implicit Flow is considered inerently insecure because allows the transmission of "
+                                +"secret tokens in the URL of HTTP GET requests.\n<br><br>.This behaviour is deprecated by OAUTHv2 specifications "
+                                +"since it exposes the secret tokens to leakages (i.e. via cache, traffic sniffing, etc.) and replay attacks.\n<br>"
+                                +"It is suggested to adopt OAUTHv2 Authorization Code Flow, or "
+                                +"any of the specific OpenID Implicyt Flow implementations (as <b>id_token</b> or <b>form_post</b>).\n<br>"
+                                +"Note: the use of Implicit Flow is also considered insecure in Mobile application contexts.\n<br>"
                                 +"<br>References:<br>"
-                                +"<a href=\"https://datatracker.ietf.org/doc/html/rfc7636\">https://datatracker.ietf.org/doc/html/rfc7636</a>",
+                                +"<a href=\"https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics-09#page-5\">https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics-09#page-5</a><br>"
+                                +"<a href=\"https://tools.ietf.org/id/draft-parecki-oauth-browser-based-apps-02.txt\">https://tools.ietf.org/id/draft-parecki-oauth-browser-based-apps-02.txt</a>",
                                 "Medium",
-                                "Firm"
+                                "Certain"
                             )
                         );
-                    // Checking for OAUTHv2 Authorization Code Flow PKCE misconfiguration
-                    } else if ((reqQueryParam.containsKey("code_challenge_method")) || (challengemethodParameter != null)) {
-                        if (reqQueryParam.get("code_challenge_method").equals("plain") || challengemethodParameter.getValue().equals("plain")) {
-                            List<int[]> matches = getMatches(requestString.getBytes(), "plain".getBytes());
+
+
+                        // Checking for Refresh token included in login response (Location header or body) that is discouraged for Implicit Flow
+                        foundRefresh = false;
+                        if (respBody.toLowerCase().contains("refresh")) {
+                                foundRefresh = true;
+                        } else if (getHttpHeaderValueFromList(respHeaders, "Location")!=null) {
+                            if (getHttpHeaderValueFromList(respHeaders, "Location").toLowerCase().contains("refresh")) {
+                                foundRefresh = true;
+                            }
+                        }
+                        if (foundRefresh) {
                             issues.add(
                                 new CustomScanIssue(
                                     baseRequestResponse.getHttpService(),
                                     helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, matches, null) },
-                                    "OAUTHv2 Authorization Code Flow with PKCE Plaintext",
-                                    "The Authorization Code Flow with PKCE is configured with the "
-                                    +"<code>code_challenge_method</code> parameter set to <b>plain</b>.\n<br>"
-                                    +"This means that the secret <code>code_verifier</code> value is sent plaintext on requests "
-                                    +"then PKCE protections against authorization code interception attacks are de-facto disabled, because "
-                                    +"they are based on the secrecy of the <code>code_verifier</code> parameter sent within requests.\n<br>"
+                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                    "OAUTHv2 Implicit Flow Improper Release of Refresh Token",
+                                    "The Resource Server releases a refresh token after successful Implicit Flow login.\n<br><br>"
+                                    +"This behaviour is deprecated by OAUTHv2 specifications for Implicit Flow, also consider that "
+                                    +"the use of OAUTHv2 Implicit Flow is insecure and should be avoided.\n<br>"
+                                    +"<br>References:<br>"
+                                    +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6749#section-4.2\">https://datatracker.ietf.org/doc/html/rfc6749#section-4.2</a><br>"
+                                    +"<a href=\"https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics-09#page-5\">https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics-09#page-5</a><br>"
+                                    +"<a href=\"https://tools.ietf.org/id/draft-parecki-oauth-browser-based-apps-02.txt\">https://tools.ietf.org/id/draft-parecki-oauth-browser-based-apps-02.txt</a>",
+                                    "Medium",
+                                    "Certain"
+                                )
+                            );
+                        }
+                
+                    // Checking for OAUTHv2 Authorization Code Flow
+                    } else if (respType.equals("code")) {
+                        // Found OAUTHv2 Authorization Code Flow 
+                        issues.add(
+                            new CustomScanIssue(
+                                baseRequestResponse.getHttpService(),
+                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                "OAUTHv2 Authorization Code Flow Detected",
+                                "This is a login request of OAUTHv2 Authorization Code Flow.",
+                                "Information",
+                                "Certain"
+                            )
+                        );
+                        // Checking for Duplicate Code value issues on OAUTHv2 Authorization Code Flow
+                        if (! GOTCODES.isEmpty()) {
+                            String respDate = getHttpHeaderValueFromList(respHeaders, "Date");
+                            if (getHttpHeaderValueFromList(respHeaders, "Date") == null) {
+                                // This is needed to avoid null values on respDate
+                                respDate = Long.toString(currentTimeStampMillis);
+                            }
+                            // Start searching if last issued authorization code is a duplicated of already received codes
+                            for (Map.Entry<String,List<String>> entry : GOTCODES.entrySet()) {
+                                List<String> codeList = entry.getValue();
+                                String codeDate = entry.getKey();
+                                for (String codeValue : codeList) {
+                                    if (responseString.toLowerCase().contains(codeValue) & (! codeDate.equals(respDate))) {
+                                        // This Authorization Code Flow response contains an already released Code
+                                        List<int[]> matches = getMatches(responseString.getBytes(), codeValue.getBytes());
+                                        issues.add(
+                                            new CustomScanIssue(
+                                                baseRequestResponse.getHttpService(),
+                                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
+                                                "OAUTHv2 Authorization Code Flow Duplicate Code Value Detected",
+                                                "The OAUTHv2 Authorization Server seems issuing duplicate values for <code>code</code> parameter "
+                                                +"during the login procedure.\n<br><br>"
+                                                +"In details, the authorization response contains the following <code>code</code> value <b>"+codeValue+"</b> which was already released.\n<br><br>"
+                                                +"For security reasons the OAUTHv2 specifications recommend that authorization code must be unique for each user's session.\n<br>"
+                                                +"Note: this issue should be <b>confirmed manually</b> by searching the duplicated authorization code "
+                                                +"values in the burp-proxy history.\n<br>"
+                                                +"<br>References:<br>"
+                                                +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2\">https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2</a>",
+                                                "Medium",
+                                                "Firm"
+                                            )
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+
+                        // Retrieving codes from OAUTHv2 Authorization Code Flow responses body or Location header
+                        if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
+                            // Enumerate OAUTHv2 authorization codes returned by HTTP responses
+                            String dateCode = getHttpHeaderValueFromList(respHeaders, "Date");
+                            if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
+                                // This is needed to avoid null values on GOTCODES
+                                dateCode = Long.toString(currentTimeStampMillis);
+                            }
+                            List<String> foundCodes = new ArrayList<>();
+                            for (String pName : SECRETCODES) {
+                                // Check if already got code in same response (filtering by date)
+                                if (! GOTCODES.containsKey(dateCode)) {
+                                    foundCodes.addAll(getMatchingParams(pName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
+                                    foundCodes.addAll(getMatchingParams(pName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
+                                    foundCodes.addAll(getMatchingParams(pName, pName, respBody, "link"));
+                                    // Remove duplicate codes found in same response
+                                    foundCodes = new ArrayList<>(new HashSet<>(foundCodes));
+                                    if (!foundCodes.isEmpty()) {
+                                        GOTCODES.put(dateCode, foundCodes);
+                                        // Check for weak code issues (guessable values)
+                                        for (String fCode : foundCodes) {
+                                            if (fCode.length()<6) {
+                                                // Found a weak code
+                                                List<int[]> requestHighlights = new ArrayList<>(1);
+                                                int[] tokenOffset = new int[2];
+                                                int tokenStart = requestString.indexOf(fCode);
+                                                tokenOffset[0] = tokenStart;
+                                                tokenOffset[1] = tokenStart+fCode.length();
+                                                requestHighlights.add(tokenOffset);
+                                                issues.add(
+                                                    new CustomScanIssue(
+                                                        baseRequestResponse.getHttpService(),
+                                                        helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                                        "OAUTHv2 Weak Authorization Code Value Detected",
+                                                        "The OAUTHv2 Authorization Code Flow presents a security misconfiguration, the Authorization Server releases weak <code>code</code> values "
+                                                        +"(insufficient entropy) during the login procedure.\n<br><br> "
+                                                        +"In details, the authorization response contains a <code>code</code> value of <b>"+fCode+"</b>.\n<br><br>"
+                                                        +"Based on OAUTHv2 specifications for security reasons the <code>code</code> must be unpredictable and unique "
+                                                        +"per client session.\n<br>Since the <code>code</code> value is guessable (insufficient entropy) "
+                                                        +"then the attack surface of the OAUTHv2 service increases.\n<br>"
+                                                        +"<br>References:<br>"
+                                                        +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6819#section-4.4.1.3\">https://datatracker.ietf.org/doc/html/rfc6819#section-4.4.1.3</a>",
+                                                        "High",
+                                                        "Firm"
+                                                    )
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+
+
+                        // Checking for OAUTHv2 Authorization Code Flow without anti-CSRF protection            
+                        if ( (!reqQueryParam.containsKey("state")) || (stateParameter == null)) {
+                            issues.add(
+                                new CustomScanIssue(
+                                    baseRequestResponse.getHttpService(),
+                                    helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                    "OAUTHv2 Authorization Code Flow without State Parameter Detected",
+                                    "The Authorization Code Flow login request does not have the <code>state</code> parameter.\n<br>"
+                                    +"Based on OAUTHv2 specifications the use of a unpredictable and unique (per user's session) <code>state</code> parameter value, "
+                                    +"provides a protection against CSRF attacks (as an anti-CSRF token) during Authorization Code Flow login procedure.\n<br>"
+                                    +"If the authorization request does not have any other anti-CSRF protection then an attacker could manipulate "
+                                    +"the OAUTHv2 Flow and obtain access to other user accounts.\n<br>"
+                                    +"<br>References:<br>"
+                                    +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6819#page-13\">https://datatracker.ietf.org/doc/html/rfc6819#page-13</a>",
+                                    "Medium",
+                                    "Firm"
+                                )
+                            );
+                        } else {
+                            // Go here when OAUTHv2 Authorization Code request contains a 'state' parameter 
+                            String stateValue = stateParameter.getValue();
+                            if (responseString.toLowerCase().contains(stateValue)) {
+                                // Checking for OAUTHv2 Authorization Code Flow with Duplicate State value issues (potential constant state values)
+                                if (! GOTSTATES.isEmpty()) {
+                                    String respDate = getHttpHeaderValueFromList(respHeaders, "Date");
+                                    if (getHttpHeaderValueFromList(respHeaders, "Date") == null) {
+                                        // This is needed to avoid null values on respDate
+                                        respDate = Long.toString(currentTimeStampMillis);
+                                    }
+                                    // Start searching if last issued authorization code is a duplicated of already received codes
+                                    for (Map.Entry<String,List<String>> entry : GOTSTATES.entrySet()) {
+                                        List<String> stateList = entry.getValue();
+                                        String stateDate = entry.getKey();
+                                        for (String stateVal: stateList) {
+                                            if (responseString.toLowerCase().contains(stateVal) & (! stateDate.equals(respDate))) {
+                                                // This Authorization Code Flow response contains an already released State
+                                                List<int[]> matches = getMatches(responseString.getBytes(), stateVal.getBytes());
+                                                issues.add(
+                                                    new CustomScanIssue(
+                                                        baseRequestResponse.getHttpService(),
+                                                        helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
+                                                        "OAUTHv2 Authorization Code Flow Duplicate State Parameter Detected",
+                                                        "The OAUTHv2 Authorization Server seems issuing duplicate values for the <code>state</code> parameter "
+                                                        +"during login procedure.\n<br><br>"
+                                                        +"In details, the authorization response contains the following <code>state</code> value <b>"+stateVal+"</b> which was already released.\n<br><br>"
+                                                        +"Based on OAUTHv2 specifications the use of a unpredictable and unique (per user's session) "
+                                                        +"<code>state</code> parameter, (generated from some private information about the user), "
+                                                        +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
+                                                        +"Using constant values for the <code>state</code> parameter de-facto disables its anti-CSRF protection.\n"
+                                                        +"If the authorization request does not have any other anti-CSRF protection then an attacker could manipulate "
+                                                        +"the OAUTHv2 Flow and obtain access to other user accounts.\n<br>"
+                                                        +"Note: this issue should be <b>confirmed manually</b> by searching the duplicated <code>state</code> parameter values "
+                                                        +"in the burp-proxy history.\n<br>"
+                                                        +"<br>References:<br>"
+                                                        +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6819#page-13\">https://datatracker.ietf.org/doc/html/rfc6819#page-13</a>",
+                                                        "Medium",
+                                                        "Tentative"
+                                                    )
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Retrieving 'state' values from OAUTHv2 Authorization Code Flow responses body or Location header
+                                if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
+                                    // Enumerate OAUTHv2 authorization states returned by HTTP responses
+                                    String dateState = getHttpHeaderValueFromList(respHeaders, "Date");
+                                    if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
+                                        // This is needed to avoid null values on GOTSTATES
+                                        dateState = Long.toString(currentTimeStampMillis);
+                                    }
+                                    List<String> foundStates = new ArrayList<>();
+                                    // Check if already got state in same response (filtering by date)
+                                    if (! GOTSTATES.containsKey(dateState)) {
+                                        foundStates.addAll(getMatchingParams("state", "state", respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
+                                        foundStates.addAll(getMatchingParams("state", "state", getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
+                                        foundStates.addAll(getMatchingParams("state", "state", respBody, "link"));
+                                        // Remove duplicate states found in same response
+                                        foundStates = new ArrayList<>(new HashSet<>(foundStates));
+                                        if (!foundStates.isEmpty()) {
+                                            GOTSTATES.put(dateState, foundStates);
+                                        }
+                                    }
+                                } else {
+                                    // The response does not return the same state parameter received within the authorization request
+                                    List<int[]> reqMatches = getMatches(requestString.getBytes(), stateValue.getBytes());
+                                    List<int[]> respMatches = getMatches(responseString.getBytes(), stateValue.getBytes());
+                                    if (respMatches.isEmpty()) {
+                                        issues.add(
+                                            new CustomScanIssue(
+                                                baseRequestResponse.getHttpService(),
+                                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, reqMatches, null) },
+                                                "OAUTHv2 Authorization Code Flow State Parameter Mismatch Detected",
+                                                "The Authorization Server does not send in response the same <code>state</code> parameter "
+                                                +"received in the authorization request during the OAUTHv2 login procedure.\n<br><br>"
+                                                +"In details, the response does not contains the same <code>state</code> value <b>"+stateValue+"</b> sent within the authorization request\n<br><br>"
+                                                +"Based on OAUTHv2 specifications the use of a unpredictable and unique (per user's session) "
+                                                +"<code>state</code> parameter (generated from some private information about the user), "
+                                                +"provides a protection against CSRF attacks (as a sort of anti-CSRF token) during login procedure.\n<br>"
+                                                +"Then for security reasons this mechanism requires that when the Authorization Server receives a <code>state</code> parameter "
+                                                +"its response must contain the same <code>state</code> value, then this misconfiguration disables its anti-CSRF protection.\n<br>"
+                                                +"If the authorization request does not have any other anti-CSRF protection  then an attacker could manipulate "
+                                                +"the OAUTHv2 Flow and obtain access to other user accounts.\n<br>"
+                                                +"<br>References:<br>"
+                                                +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6819#page-13\">https://datatracker.ietf.org/doc/html/rfc6819#page-13</a>",
+                                                "Medium",
+                                                "Firm"
+                                            )
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+
+
+                        // Checkinf for OAUTHv2 Authorization Code Flow without PKCE protection
+                        if ((!reqQueryParam.containsKey("code_challenge")) || (challengeParameter == null)) {
+                            issues.add(
+                                new CustomScanIssue(
+                                    baseRequestResponse.getHttpService(),
+                                    helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                    "OAUTHv2 Authorization Code Flow without PKCE Protection",
+                                    "The Authorization Code Flow login request does not have the <code>code_challenge</code> parameter, "
+                                    +"then there is not any PKCE protection against authorization code interception.\n<br><br>"
+                                    +"The OAUTHv2 Authorization Code Flow with PKCE provides protection against authorization code interception attacks, "
+                                    +"and is a security requirement on Mobile contexts.\n<br>"
                                     +"In Mobile, Native desktop and SPA contexts is a security requirement to use OAUTHv2 Authorization Code Flow with PKCE extension.\n<br>"
                                     +"<br>References:<br>"
                                     +"<a href=\"https://datatracker.ietf.org/doc/html/rfc7636\">https://datatracker.ietf.org/doc/html/rfc7636</a>",
@@ -1634,199 +1865,169 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                     "Firm"
                                 )
                             );
+                        // Checking for OAUTHv2 Authorization Code Flow PKCE misconfiguration
+                        } else if ((reqQueryParam.containsKey("code_challenge_method")) || (challengemethodParameter != null)) {
+                            if (reqQueryParam.get("code_challenge_method").equals("plain") || challengemethodParameter.getValue().equals("plain")) {
+                                List<int[]> matches = getMatches(requestString.getBytes(), "plain".getBytes());
+                                issues.add(
+                                    new CustomScanIssue(
+                                        baseRequestResponse.getHttpService(),
+                                        helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, matches, null) },
+                                        "OAUTHv2 Authorization Code Flow with PKCE Plaintext",
+                                        "The Authorization Code Flow with PKCE is configured with the <code>code_challenge_method</code> parameter set to <b>plain</b>.\n<br><br>"
+                                        +"This means that the secret <code>code_verifier</code> value is sent plaintext on requests "
+                                        +"then PKCE protections against authorization code interception attacks are de-facto disabled. In fact "
+                                        +"they are based on the secrecy of the <code>code_verifier</code> parameter sent within requests.\n<br>"
+                                        +"In Mobile, Native desktop and SPA contexts is a security requirement to use OAUTHv2 Authorization Code Flow with PKCE extension.\n<br>"
+                                        +"<br>References:<br>"
+                                        +"<a href=\"https://datatracker.ietf.org/doc/html/rfc7636\">https://datatracker.ietf.org/doc/html/rfc7636</a>",
+                                        "Medium",
+                                        "Firm"
+                                    )
+                                );
+                            }
                         }
-                    }
-                } 
+                    } 
                 
-            // Then search for OAUTHv2 Resource Owner Password Credentials or Client Credentials Flows
-            } else if (reqParam!=null & grantParameter != null) {
-                stdout.println("[+] Passive Scan: OAUTHv2 Resource Owner Password Credentials or Client Credentials Flows detected");
-                // First retrieves the grant_type parameter from request body
-                String grantType = "";
-                for (IParameter param: reqParam) {
-                    if (param.getType() == IParameter.PARAM_BODY) {
-                        if (param.getName().equals("grant_type")) {
-                            grantType = param.getValue();
+                // Then search for OAUTHv2 Resource Owner Password Credentials or Client Credentials Flows
+                } else if (reqParam!=null & grantParameter != null) {
+                    stdout.println("[+] Passive Scan: OAUTHv2 Resource Owner Password Credentials or Client Credentials Flows detected");
+                    // First retrieves the grant_type parameter from request body
+                    String grantType = "";
+                    for (IParameter param: reqParam) {
+                        if (param.getType() == IParameter.PARAM_BODY) {
+                            if (param.getName().equals("grant_type")) {
+                                grantType = param.getValue();
+                            }
                         }
                     }
-                }
 
-                // Checking for OAUTHv2 Resource Owner Password Credentials Flow
-                if (grantType.equals("password")) {
-                    // Found OAUTHv2 Resource Owner Password Credentials Flow
-                    issues.add(
-                        new CustomScanIssue(
-                            baseRequestResponse.getHttpService(),
-                            helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                            "OAUTHv2 Resource Owner Password Credentials Flow Detected",
-                            "This is a Resource Owner Password Credentials Flow login request.\n<br>"
-                            +"Note: in Mobile application contexts the Resource Owner Password Credentials Flow should be implemented "
-                            +"only when both Client Application and Authorization Server belong to the same provider.",
-                            "Information",
-                            "Certain"
-                        )
-                    );
-
-                // Checking OAUTHv2 Client Credentials Flow
-                } else if (grantType.equals("client_credentials")) {
-                    // Checking if Refresh token is released in login response (Location header or body) that is discouraged for Client Credentials Flow
-                    foundRefresh = false;
-                    if (respBody.toLowerCase().contains("refresh")) {
-                            foundRefresh = true;
-                    } else if (getHttpHeaderValueFromList(respHeaders, "Location")!=null) {
-                        if (getHttpHeaderValueFromList(respHeaders, "Location").toLowerCase().contains("refresh")) {
-                            foundRefresh = true;
-                        }
-                    }
-                    if (foundRefresh) {
+                    // Checking for OAUTHv2 Resource Owner Password Credentials Flow
+                    if (grantType.equals("password")) {
+                        // Found OAUTHv2 Resource Owner Password Credentials Flow
                         issues.add(
                             new CustomScanIssue(
                                 baseRequestResponse.getHttpService(),
                                 helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                 new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                "OAUTHv2 Client Credentials Flow Improper Release of Refresh Token",
-                                "The Resource Server releases a refresh token after sucessful Client Credentials Flow login, "
-                                +"this practice is discouraged by OAUTHv2 specifications.\n<br>"
-                                +"<br>References:<br>"
-                                +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6749#section-4.4.3\">https://datatracker.ietf.org/doc/html/rfc6749#section-4.4.3</a>",
-                                "Low",
-                                "Certain"
-                            )
-                        );                           
-                    } else {
-                        // Found OAUTHv2 Client Credentials Flow
-                        issues.add(
-                            new CustomScanIssue(
-                                baseRequestResponse.getHttpService(),
-                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                "OAUTHv2 Client Credentials Flow Detected",
-                                "This is a Client Credentials Flow login request.\n<br>"
-                                +"Normally it is used by clients to obtain an access token outside of the context of a user (i.e. Machine-to-Machine).",
+                                "OAUTHv2 Resource Owner Password Credentials Flow Detected",
+                                "This is a Resource Owner Password Credentials Flow login request.\n<br>"
+                                +"Note: in Mobile application contexts the Resource Owner Password Credentials Flow should be implemented "
+                                +"only when both Client Application and Authorization Server belong to the same provider.",
                                 "Information",
                                 "Certain"
                             )
                         );
+
+                    // Checking OAUTHv2 Client Credentials Flow
+                    } else if (grantType.equals("client_credentials")) {
+                        // Checking if Refresh token is released in login response (Location header or body) that is discouraged for Client Credentials Flow
+                        foundRefresh = false;
+                        if (respBody.toLowerCase().contains("refresh")) {
+                                foundRefresh = true;
+                        } else if (getHttpHeaderValueFromList(respHeaders, "Location")!=null) {
+                            if (getHttpHeaderValueFromList(respHeaders, "Location").toLowerCase().contains("refresh")) {
+                                foundRefresh = true;
+                            }
+                        }
+                        if (foundRefresh) {
+                            issues.add(
+                                new CustomScanIssue(
+                                    baseRequestResponse.getHttpService(),
+                                    helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                    "OAUTHv2 Client Credentials Flow Improper Release of Refresh Token",
+                                    "The Resource Server releases a refresh token after sucessful Client Credentials Flow login, "
+                                    +"this practice is discouraged by OAUTHv2 specifications.\n<br>"
+                                    +"<br>References:<br>"
+                                    +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6749#section-4.4.3\">https://datatracker.ietf.org/doc/html/rfc6749#section-4.4.3</a>",
+                                    "Low",
+                                    "Certain"
+                                )
+                            );                           
+                        } else {
+                            // Found OAUTHv2 Client Credentials Flow
+                            issues.add(
+                                new CustomScanIssue(
+                                    baseRequestResponse.getHttpService(),
+                                    helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                    "OAUTHv2 Client Credentials Flow Detected",
+                                    "This is a Client Credentials Flow login request.\n<br>"
+                                    +"Normally it is used by clients to obtain an access token outside of the context of a user (i.e. Machine-to-Machine).",
+                                    "Information",
+                                    "Certain"
+                                )
+                            );
+                        }
                     }
                 }
             }
-        }
 
-        // Additional checks for Secret Token Leakage issues
-        int[] findingOffset = new int[2];
-        if (! GOTTOKENS.isEmpty()) {
-            String reqReferer = getHttpHeaderValueFromList(reqHeaders, "Referer");
-            for (Map.Entry<String,List<String>> entry : GOTTOKENS.entrySet()) {
-                List<String> tokenList = entry.getValue();
-                for (String tokenValue: tokenList) {
-                    if (reqReferer!=null) {
-                        if (reqReferer.contains(tokenValue)) {
-                            // Found Code Leakage issue on Referer header
+
+            // Additional checks for Secret Token Leakage issues
+            int[] findingOffset = new int[2];
+            if (! GOTTOKENS.isEmpty()) {
+                String reqReferer = getHttpHeaderValueFromList(reqHeaders, "Referer");
+                for (Map.Entry<String,List<String>> entry : GOTTOKENS.entrySet()) {
+                    List<String> tokenList = entry.getValue();
+                    for (String tokenValue: tokenList) {
+                        if (reqReferer!=null) {
+                            if (reqReferer.contains(tokenValue)) {
+                                // Found Code Leakage issue on Referer header
+                                List<int[]> requestHighlights = new ArrayList<>(1);
+                                int findingStart = requestString.indexOf(reqReferer);
+                                findingOffset[0] = findingStart;
+                                findingOffset[1] = findingStart+reqReferer.length();
+                                requestHighlights.add(findingOffset);                            
+                                issues.add(
+                                    new CustomScanIssue(
+                                        baseRequestResponse.getHttpService(),
+                                        helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                        "OAUTHv2/OpenID Leakage of Secret Token on Referer Header",
+                                        "The request improperly exposes the following secret token (Access Token or Refresh Token) "
+                                        +"on its Referer header: <b>"+tokenValue+"</b>, then a threat agent could be able retrieve it and "
+                                        +"obtain access to private resources of victim users.",
+                                        "Medium",
+                                        "Firm"
+                                    )
+                                );
+                            }
+                        }
+                        if (!reqQueryString.isEmpty() & reqQueryString.contains(tokenValue)) {
+                            // Found Code Leakage issue in URL query
                             List<int[]> requestHighlights = new ArrayList<>(1);
-                            int findingStart = requestString.indexOf(reqReferer);
+                            int findingStart = requestString.indexOf(tokenValue);
                             findingOffset[0] = findingStart;
-                            findingOffset[1] = findingStart+reqReferer.length();
-                            requestHighlights.add(findingOffset);                            
+                            findingOffset[1] = findingStart+tokenValue.length();
+                            requestHighlights.add(findingOffset);
                             issues.add(
                                 new CustomScanIssue(
                                     baseRequestResponse.getHttpService(),
                                     helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                     new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
-                                    "OAUTHv2/OpenID Leakage of Secret Token on Referer Header",
+                                    "OAUTHv2/OpenID Leakage of Secret Token in URL Query",
                                     "The request improperly exposes the following secret token (Access Token or Refresh Token) "
-                                    +"on its Referer header: <b>"+tokenValue+"</b>, then a threat agent could be able retrieve it and "
+                                    +"value on its URL query string: <b>"+tokenValue+"</b>, then a threat agent could be able retrieve it and "
                                     +"obtain access to private resources of victim users.",
                                     "Medium",
                                     "Firm"
                                 )
                             );
                         }
-                    }
-                    if (!reqQueryString.isEmpty() & reqQueryString.contains(tokenValue)) {
-                        // Found Code Leakage issue in URL query
-                        List<int[]> requestHighlights = new ArrayList<>(1);
-                        int findingStart = requestString.indexOf(tokenValue);
-                        findingOffset[0] = findingStart;
-                        findingOffset[1] = findingStart+tokenValue.length();
-                        requestHighlights.add(findingOffset);
-                        issues.add(
-                            new CustomScanIssue(
-                                baseRequestResponse.getHttpService(),
-                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
-                                "OAUTHv2/OpenID Leakage of Secret Token in URL Query",
-                                "The request improperly exposes the following secret token (Access Token or Refresh Token) "
-                                +"value on its URL query string: <b>"+tokenValue+"</b>, then a threat agent could be able retrieve it and "
-                                +"obtain access to private resources of victim users.",
-                                "Medium",
-                                "Firm"
-                            )
-                        );
-                    }
-                }                
+                    }                
+                }
             }
-        }
-        // Additional checks for OpenID Id_Token Leakage issues
-        if (! GOTOPENIDTOKENS.isEmpty()) {
-            String reqReferer = getHttpHeaderValueFromList(reqHeaders, "Referer");
-            List<String> idtokenList = GOTOPENIDTOKENS;
-            for (String idtokenValue: idtokenList) {
-                if (reqReferer!=null) { 
-                    if (reqReferer.contains(idtokenValue)) {
-                        // Found Token Leakage issue on Referer header
-                        List<int[]> requestHighlights = new ArrayList<>(1);
-                        int findingStart = requestString.indexOf(reqReferer);
-                        findingOffset[0] = findingStart;
-                        findingOffset[1] = findingStart+reqReferer.length();
-                        requestHighlights.add(findingOffset);
-                        issues.add(
-                            new CustomScanIssue(
-                                baseRequestResponse.getHttpService(),
-                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
-                                "OpenID Leakage of ID_Token on Referer Header",
-                                "The request improperly exposes the following OpenID <code>id_token</code> "
-                                +"on its Referer header: <b>"+idtokenValue+"</b>, then a threat agent could be able retrieve it and "
-                                +"obtain access to private resources of victim users.",
-                                "Medium",
-                                "Firm"
-                            )
-                        );
-                    }
-                }
-                if (!reqQueryString.isEmpty() & reqQueryString.contains(idtokenValue)) {
-                    // Found Token Leakage issue in URL query
-                    List<int[]> requestHighlights = new ArrayList<>(1);
-                    int findingStart = requestString.indexOf(idtokenValue);
-                    findingOffset[0] = findingStart;
-                    findingOffset[1] = findingStart+idtokenValue.length();
-                    requestHighlights.add(findingOffset);
-                    issues.add(
-                        new CustomScanIssue(
-                            baseRequestResponse.getHttpService(),
-                            helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
-                            "OpenID Leakage of ID_Token in URL Query",
-                            "The request improperly exposes the following OpenID <code>id_token</code> "
-                            +"value on its URL query string: <b>"+idtokenValue+"</b>, then a threat agent could be able retrieve it and "
-                            +"obtain access to private resources of victim users.",
-                            "Medium",
-                            "Firm"
-                        )
-                    );
-                }
-            }   
-        }
-        // Additional checks for Authorization Code Leakage issues
-        if (!GOTCODES.isEmpty()) {
-            String reqReferer = getHttpHeaderValueFromList(reqHeaders, "Referer");
-            for (Map.Entry<String,List<String>> entry : GOTCODES.entrySet()) {
-                List<String> codeList = entry.getValue();
-                for (String codeValue: codeList) {
-                    if (reqReferer!=null) {
-                        if (reqReferer.contains(codeValue)) {
-                            // Found Code Leakage issue on Referer header
+            // Additional checks for OpenID Id_Token Leakage issues
+            if (! GOTOPENIDTOKENS.isEmpty()) {
+                String reqReferer = getHttpHeaderValueFromList(reqHeaders, "Referer");
+                List<String> idtokenList = GOTOPENIDTOKENS;
+                for (String idtokenValue: idtokenList) {
+                    if (reqReferer!=null) { 
+                        if (reqReferer.contains(idtokenValue)) {
+                            // Found Token Leakage issue on Referer header
                             List<int[]> requestHighlights = new ArrayList<>(1);
                             int findingStart = requestString.indexOf(reqReferer);
                             findingOffset[0] = findingStart;
@@ -1837,41 +2038,93 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                     baseRequestResponse.getHttpService(),
                                     helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                     new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
-                                    "OAUTHv2/OpenID Leakage of Authorization Code on Referer Header",
-                                    "The request improperly exposes the following OAUTHv2 authorization code "
-                                    +"on its Referer header: <b>"+codeValue+"</b>, then a threat agent could be able retrieve it and "
-                                    +"potentially gain access to private resources of victim users.",
+                                    "OpenID Leakage of ID_Token on Referer Header",
+                                    "The request improperly exposes the following OpenID <code>id_token</code> "
+                                    +"on its Referer header: <b>"+idtokenValue+"</b>, then a threat agent could be able retrieve it and "
+                                    +"obtain access to private resources of victim users.",
                                     "Medium",
                                     "Firm"
                                 )
                             );
                         }
                     }
-                    if (!reqQueryString.isEmpty() & reqQueryString.contains(codeValue)) {
-                        // Found Code Leakage issue in URL query
+                    if (!reqQueryString.isEmpty() & reqQueryString.contains(idtokenValue)) {
+                        // Found Token Leakage issue in URL query
                         List<int[]> requestHighlights = new ArrayList<>(1);
-                        int findingStart = requestString.indexOf(codeValue);
+                        int findingStart = requestString.indexOf(idtokenValue);
                         findingOffset[0] = findingStart;
-                        findingOffset[1] = findingStart+codeValue.length();
+                        findingOffset[1] = findingStart+idtokenValue.length();
                         requestHighlights.add(findingOffset);
                         issues.add(
                             new CustomScanIssue(
                                 baseRequestResponse.getHttpService(),
                                 helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                 new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
-                                "OAUTHv2/OpenID Leakage of Authorization Code in URL Query",
-                                "The request improperly exposes the following OAUTHv2 authorization code "
-                                +"value on its URL query string: <b>"+codeValue+"</b>, then a threat agent could be able retrieve it and "
-                                +"potentially gain access to private resources of victim users.",
+                                "OpenID Leakage of ID_Token in URL Query",
+                                "The request improperly exposes the following OpenID <code>id_token</code> "
+                                +"value on its URL query string: <b>"+idtokenValue+"</b>, then a threat agent could be able retrieve it and "
+                                +"obtain access to private resources of victim users.",
                                 "Medium",
                                 "Firm"
                             )
                         );
                     }
-                }                
+                }   
             }
-        }
-    
+            // Additional checks for Authorization Code Leakage issues
+            if (!GOTCODES.isEmpty()) {
+                String reqReferer = getHttpHeaderValueFromList(reqHeaders, "Referer");
+                for (Map.Entry<String,List<String>> entry : GOTCODES.entrySet()) {
+                    List<String> codeList = entry.getValue();
+                    for (String codeValue: codeList) {
+                        if (reqReferer!=null) {
+                            if (reqReferer.contains(codeValue)) {
+                                // Found Code Leakage issue on Referer header
+                                List<int[]> requestHighlights = new ArrayList<>(1);
+                                int findingStart = requestString.indexOf(reqReferer);
+                                findingOffset[0] = findingStart;
+                                findingOffset[1] = findingStart+reqReferer.length();
+                                requestHighlights.add(findingOffset);
+                                issues.add(
+                                    new CustomScanIssue(
+                                        baseRequestResponse.getHttpService(),
+                                        helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                        "OAUTHv2/OpenID Leakage of Authorization Code on Referer Header",
+                                        "The request improperly exposes the following OAUTHv2 authorization code "
+                                        +"on its Referer header: <b>"+codeValue+"</b>, then a threat agent could be able retrieve it and "
+                                        +"potentially gain access to private resources of victim users.",
+                                        "Medium",
+                                        "Firm"
+                                    )
+                                );
+                            }
+                        }
+                        if (!reqQueryString.isEmpty() & reqQueryString.contains(codeValue)) {
+                            // Found Code Leakage issue in URL query
+                            List<int[]> requestHighlights = new ArrayList<>(1);
+                            int findingStart = requestString.indexOf(codeValue);
+                            findingOffset[0] = findingStart;
+                            findingOffset[1] = findingStart+codeValue.length();
+                            requestHighlights.add(findingOffset);
+                            issues.add(
+                                new CustomScanIssue(
+                                    baseRequestResponse.getHttpService(),
+                                    helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                    "OAUTHv2/OpenID Leakage of Authorization Code in URL Query",
+                                    "The request improperly exposes the following OAUTHv2 authorization code "
+                                    +"value on its URL query string: <b>"+codeValue+"</b>, then a threat agent could be able retrieve it and "
+                                    +"potentially gain access to private resources of victim users.",
+                                    "Medium",
+                                    "Firm"
+                                )
+                            );
+                        }
+                    }                
+                }
+            }
+        }    
     return issues;
     }
 
@@ -1894,7 +2147,6 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         String proto = url.getProtocol();
         String host = url.getHost();
         byte[] rawrequest = baseRequestResponse.getRequest();
-        //String requestStr = helpers.bytesToString(rawrequest);
         IParameter redirectUriParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "redirect_uri");
         IParameter scopeParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "scope");
         IParameter clientIdParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "client_id");
@@ -1907,10 +2159,6 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                 for (String payload_redir : INJ_REDIR) {          
                     String redir_match = payload_redir;
                     String originalRedirUri = "";
-                    String randomValue = randomString(10);
-                    if (payload_redir.contains("SUBDOMAINCHANGEME")) {
-                        payload_redir = payload_redir.replace("SUBDOMAINCHANGEME", randomValue); 
-                    }
                     // Extracting the original 'redirect_uri' parameter
                     if (redirectUriParameter != null) {
                         originalRedirUri = redirectUriParameter.getValue();
@@ -1919,12 +2167,9 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                     }
                     hostheaderCheck = false;
                     // Building some specific payloads
-                    if (payload_redir.contains("../")) {
+                    if (payload_redir.contains("../") || payload_redir.contains("..;/")) {
                         redir_match = originalRedirUri + payload_redir;
                         payload_redir = originalRedirUri + payload_redir;
-                    } else if (payload_redir.contains("..;/")) {
-                        redir_match = originalRedirUri + payload_redir;
-                        payload_redir = originalRedirUri + payload_redir; 
                     } else if (payload_redir.contains("%2e%2e%2f")) {
                         redir_match = originalRedirUri + payload_redir;
                         payload_redir = originalRedirUri + payload_redir;
@@ -1939,10 +2184,9 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                         redir_match = payload_redir.replace("&", "");
                         payload_redir = originalRedirUri + payload_redir;
                     } else if (payload_redir.equals("HOST_HEADER")) {
-                        // Change Host header of original request 
-                        //in order to check the issue reported on "https://portswigger.net/daily-swig/oauth-standard-exploited-for-account-takeover"
+                        // Change Host header of original request in order to check the issue reported on "https://portswigger.net/daily-swig/oauth-standard-exploited-for-account-takeover"
                         hostheaderCheck = true;
-                        String newHostname = randomValue + ".burpcollaborator.net";
+                        String newHostname = "burpcollaborator.net";
                         payload_redir = newHostname+"/"+host;
                         redir_match = "https://" + newHostname + "/" + host;
                     } else if (payload_redir.startsWith(".") || payload_redir.startsWith("@")) {
@@ -1995,6 +2239,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                             }
                         }
                     }
+
                     byte[] checkResponse = checkRequestResponse.getResponse();
                     String checkResponseStr = helpers.bytesToString(checkResponse);
                     List<int[]> activeScanMatches = getMatches(checkResponse, redir_match.getBytes());
@@ -2013,14 +2258,14 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                         helpers.analyzeRequest(baseRequestResponse).getUrl(), 
                                         new IHttpRequestResponse[] { callbacks.applyMarkers(checkRequestResponse, requestHighlights, activeScanMatches) }, 
                                         "OpenID Open Redirect via Host Header",
-                                        "Found an input validation issue on OpenID Authorization Code (or Hybrid) Flow  request header <code>Host</code>.\n<br>"
-                                        +"The payload injected on request:\n <b>"+ payload_redir +"</b>\nwas returned as redirection endpoint "
-                                        +"as 'redirect_uri' on response:\n <b>"+ helpers.bytesToString(redir_match.getBytes())+"</b>\n<br>An attacker could "
-                                        +"exploit this vulnerability to steal authorization codes by redirecting victim users "
-                                        +"to a external domain under his control (account hijacking).\n"
+                                        "Found an input validation issue on OpenID Authorization Code (or Hybrid) Flow  request header <code>Host</code>.\n<br><br>"
+                                        +"In details, the payload injected on request Host header <b>"+ payload_redir +"</b> was interpreted as redirection endpoint "
+                                        +"on response <b>"+ helpers.bytesToString(redir_match.getBytes())+"</b>.\n<br><br>"
+                                        +"An attacker could abuse this vulnerability to steal authorization codes, by redirecting victim users "
+                                        +"to a external domain under his control (account hijacking). \n"
                                         +"In case of whitelisted domains on <code>Host</code> header it could be yet possible to "
                                         +"steal authorization codes by redirecting victim users to a so-called"
-                                        +"\"proxy-page\" of Client-Application.\n Proxy pages could be recognized by any of the "
+                                        +"\"proxy-page\" of Client-Application.\n<br>Proxy pages could be recognized by any of the "
                                         +"following characteristics: pages affected by some specific vulnerabilities "
                                         +"(as Open Redirect, XSS, HTML injection, etc.), or pages containing "
                                         +"dangerous JavaScript handilng query parameters and URL fragments "
@@ -2034,14 +2279,14 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                     helpers.analyzeRequest(baseRequestResponse).getUrl(), 
                                     new IHttpRequestResponse[] { callbacks.applyMarkers(checkRequestResponse, requestHighlights, activeScanMatches) }, 
                                     "OAUTHv2 Open Redirect via Host Header",
-                                    "Found an input validation issue on OAUTHv2 Authorization Code Flow request header <code>Host</code>.\n<br>"
-                                    +"The payload injected on request:\n <b>"+ payload_redir +"</b>\nwas returned as redirection endpoint "
-                                    +"as 'redirect_uri' on response:\n <b>"+ helpers.bytesToString(redir_match.getBytes())+"</b>\n<br>An attacker could "
-                                    +"exploit this vulnerability to steal authorization codes by redirecting victim users "
-                                    +"to a external domain under his control (account hijacking).\n"
+                                    "Found an input validation issue on OAUTHv2 Authorization Code Flow request header <code>Host</code>.\n<br><br>"
+                                    +"In details, the payload injected on request <b>"+ payload_redir +"</b> was interpreted as redirection endpoint "
+                                    +"on response <b>"+ helpers.bytesToString(redir_match.getBytes())+"</b>.\n<br><br>"
+                                    +"An attacker could abuse this vulnerability to steal authorization codes, by redirecting victim users "
+                                    +"to a external domain under his control (account hijacking). \n"
                                     +"In case of whitelisted domains on <code>Host</code> header it could be yet possible to "
                                     +"steal authorization codes by redirecting victim users to a so-called"
-                                    +"\"proxy-page\" of Client-Application.\n Proxy pages could be recognized by any of the "
+                                    +"\"proxy-page\" of Client-Application.\n<br>Proxy pages could be recognized by any of the "
                                     +"following characteristics: pages affected by some specific vulnerabilities "
                                     +"(as Open Redirect, XSS, HTML injection, etc.), or pages containing "
                                     +"dangerous JavaScript handilng query parameters and URL fragments "
@@ -2059,14 +2304,14 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                         helpers.analyzeRequest(baseRequestResponse).getUrl(), 
                                         new IHttpRequestResponse[] { callbacks.applyMarkers(checkRequestResponse, requestHighlights, activeScanMatches) }, 
                                         "OpenID Open Redirect via Redirect_Uri Parameter",
-                                        "Found an input validation issue on OpenID Authorization Code (or Hybrid) Flow request parameter <code>redirect_uri</code>.\n<br>"
-                                        +"The payload injected on request:\n <b>"+ payload_redir +"</b>\nwas returned as redirection endpoint " 
-                                        +"in response:\n <b>"+ helpers.bytesToString(redir_match.getBytes())+"</b>\n<br>An attacker could "
-                                        +"exploit this vulnerability to steal authorization codes by redirecting victim users "
-                                        +"to a external domain under his control (account hijacking).\n"
+                                        "Found an input validation issue on OpenID Authorization Code (or Hybrid) Flow request parameter <code>redirect_uri</code>.\n<br><br>"
+                                        +"In details, the payload injected on request <b>"+ payload_redir +"</b> was returned as redirection endpoint " 
+                                        +"in response <b>"+ helpers.bytesToString(redir_match.getBytes())+"</b>.\n<br><br>"
+                                        +"An attacker could exploit this vulnerability to steal authorization codes, by redirecting victim users "
+                                        +"to a external domain under his control (account hijacking). \n"
                                         +"In case of whitelisted domains on <code>redirect_uri</code> it could be yet possible to "
                                         +"steal authorization codes by redirecting victim users to a so-called"
-                                        +"\"proxy-page\" of Client-Application.\n Proxy pages could be recognized by any of the "
+                                        +"\"proxy-page\" of Client-Application.\n<br>Proxy pages could be recognized by any of the "
                                         +"following characteristics: pages affected by some specific vulnerabilities "
                                         +"(as Open Redirect, XSS, HTML injection, etc.), or pages containing "
                                         +"dangerous JavaScript handilng query parameters and URL fragments "
@@ -2083,13 +2328,13 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                     new IHttpRequestResponse[] { callbacks.applyMarkers(checkRequestResponse, requestHighlights, activeScanMatches) }, 
                                     "OAUTHv2 Open Redirect via Redirect_Uri Parameter",
                                     "Found an input validation issue on OAUTHv2 Authorization Code Flow request parameter <code>redirect_uri</code>.\n<br>"
-                                    +"The payload injected on request:\n <b>"+ payload_redir +"</b>\nwas returned as redirection endpoint " 
-                                    +"in response:\n <b>"+ helpers.bytesToString(redir_match.getBytes())+"</b>\n<br>An attacker could "
-                                    +"exploit this vulnerability to steal authorization codes by redirecting victim users "
-                                    +"to a external domain under his control (account hijacking).\n"
+                                    +"In details, the payload injected on request:\n <b>"+ payload_redir +"</b> was returned as redirection endpoint " 
+                                    +"in response <b>"+ helpers.bytesToString(redir_match.getBytes())+"</b>.\n<br><br>"
+                                    +"An attacker could exploit this vulnerability to steal authorization codes, by redirecting victim users "
+                                    +"to a external domain under his control (account hijacking). \n"
                                     +"In case of whitelisted domains on <code>redirect_uri</code> it could be yet possible to "
                                     +"steal authorization codes by redirecting victim users to a so-called"
-                                    +"\"proxy-page\" of Client-Application.\n Proxy pages could be recognized by any of the "
+                                    +"\"proxy-page\" of Client-Application.\n<br>Proxy pages could be recognized by any of the "
                                     +"following characteristics: pages affected by some specific vulnerabilities "
                                     +"(as Open Redirect, XSS, HTML injection, etc.), or pages containing "
                                     +"dangerous JavaScript handilng query parameters and URL fragments "
@@ -2140,7 +2385,6 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                         checkRequestStr = helpers.bytesToString(checkRequest_code);
                         byte [] checkResponse_code = checkRequestResponse_code.getResponse();
                         IResponseInfo checkRespInfo_code = helpers.analyzeResponse(checkResponse_code);
-                        //IParameter codeParameter = helpers.getRequestParameter(checkRequestResponse_code.getRequest(), "code");
                         IParameter authorizationParameter = helpers.getRequestParameter(checkRequestResponse_code.getRequest(), "Authorization");
                         String checkResponseStr_code = helpers.bytesToString(checkResponse_code);
                         // For OpenID the code requests could be sent in Authorization Code or Hybrid Flows
@@ -2264,9 +2508,9 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                         helpers.analyzeRequest(baseRequestResponse).getUrl(), 
                                         new IHttpRequestResponse[] {checkRequestResponse_code, callbacks.applyMarkers(checkRequestResponse_token, requestHighlights, activeScanMatches)},
                                         "OpenID Improper Validation of Scope Parameter",
-                                        "The OpenID Flow seems not properly validating the <code>scope</code> request parameter.\n<br>"
-                                        +"The Authorization Server accepted the <code>scope</code> parameter value injected on request "
-                                        +"<b>"+ payload_scope +"</b> and released a secret token on response.\n<br>"
+                                        "The OpenID Flow seems not properly validating the <code>scope</code> request parameter.\n<br><br>"
+                                        +"In details, the Authorization Server accepted the <code>scope</code> parameter value injected on request "
+                                        +"<b>"+ payload_scope +"</b> and released a secret token on response.\n<br><br>"
                                         +"The <code>scope</code> parameter plays an important role during login procedure, because it "
                                         +"defines the users approved permissions for Client-Application during OPenID Flows, note also "
                                         +"that each provider can define custom <code>scope</code> values.\n<br>"
@@ -2283,9 +2527,9 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                         helpers.analyzeRequest(baseRequestResponse).getUrl(), 
                                         new IHttpRequestResponse[] {checkRequestResponse_code, callbacks.applyMarkers(checkRequestResponse_token, requestHighlights, activeScanMatches)}, 
                                         "OAUTHv2 Improper Validation of Scope Parameter",
-                                        "The OAUTHv2 Flow seems not properly validating the <code>scope</code> request parameter.\n<br>"
-                                        +"The Authorization Server accepted the <code>scope</code> parameter value injected on request "
-                                        +"<b>"+ payload_scope +"</b> and released a secret token on response.\n<br>"
+                                        "The OAUTHv2 Flow seems not properly validating the <code>scope</code> request parameter.\n<br><br>"
+                                        +"In details, the Authorization Server accepted the <code>scope</code> parameter value injected on request "
+                                        +"<b>"+ payload_scope +"</b> and released a secret token on response.\n<br><br>"
                                         +"The <code>scope</code> parameter plays an important role during login procedure, because it "
                                         +"defines the users approved permissions for Client-Application during OAUTHv2 Flows, note also "
                                         +"that each provider can define custom <code>scope</code> values.\n<br>"
@@ -2363,14 +2607,14 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 helpers.analyzeRequest(baseRequestResponse).getUrl(), 
                                 new IHttpRequestResponse[] {callbacks.applyMarkers(baseRequestResponse, requestHighlights, null), callbacks.applyMarkers(checkRequestResponse, requestHighlights, null) },
                                 "OAUTHv2/OpenID Flow Vulnerable to Authorization Code Replay Attacks",
-                                "The Resource Server does not invalidate the <code>code</code> parameter after first use "
-                                +"so the implemented OAUTHv2/OpenID Flow (Authorization Code or Hybrid) is vulnerable to authorization code replay attacks.\n<br>"
-                                +"It was possible to obtain a new access token (or session cookie) by re-sending the authorization code:\n <b>"+ codeString +"</b>\n<br>"
+                                "The Resource Server does not invalidate the <code>code</code> parameter after first use, "
+                                +"so the implemented OAUTHv2/OpenID Flow (Authorization Code or Hybrid) is vulnerable to authorization code replay attacks.\n<br><br>"
+                                +"In details, it was possible to obtain a new access token (or session cookie) by re-sending an already used authorization code:\n <b>"+ codeString +"</b>\n<br><br>"
                                 +"An attacker, able to retrieve an used <code>code</code> value of any user, could abuse this "
                                 +"vulnerability in order to re-exchange the authorization code with a valid access token (or session cookie) "
                                 +"and obtain access to reserved data of the victim user.\n<br>"
                                 +"<br>References:<br>"
-                                +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2\">https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2</a>"
+                                +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2\">https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2</a><br>"
                                 +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#TokenRequestValidation\">https://openid.net/specs/openid-connect-core-1_0.html#TokenRequestValidation</a>",
                                 "High",
                                 "Certain"));
@@ -2389,7 +2633,6 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         // Scan for nonce duplicate replay and nonce not controlled issues for the requests of all OpenID Flows
         List<IScanIssue> issues = new ArrayList<>();
         int[] payloadOffset = new int[2];
-        //String checkRequestStr;
         IResponseVariations respVariations = null;
         Boolean isOpenID = false;
         Boolean respDiffers = false;
@@ -2451,11 +2694,11 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                     baseRequestResponse.getHttpService(),
                                     helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                     new IHttpRequestResponse[] {callbacks.applyMarkers(baseRequestResponse, requestHighlights, null), callbacks.applyMarkers(checkRequestResponse, requestHighlights, null) },
-                                    "OpenID Duplicate Nonce Parameter Detected",
-                                    "The OpenID Authorization Code Flow seems using duplicate values for the <code>nonce</code> parameter "
-                                    +"during login procedure.\n<br>"
-                                    +"The Authorization Server accepted a request with an already used <code>nonce</code> value\n <b>"+ nonceValue +"</b> "
-                                    +"and released a new secret token (or authorization code) on response.\n<br>"
+                                    "OpenID Flow Duplicate Nonce Parameter Detected",
+                                    "The OpenID Authorization Server seems issuing duplicate values for the <code>nonce</code> parameter "
+                                    +"during login procedure.\n<br><br>"
+                                    +"In details, the Authorization Server accepted a request with an already used <code>nonce</code> value\n <b>"+ nonceValue +"</b> "
+                                    +"and released a new secret token (or authorization code) on response.\n<br><br>"
                                     +"Based on OpenID specifications the <code>nonce</code> parameter is used to associate a Client session "
                                     +"with an ID Token, and to mitigate replay attacks.\n<br>"
                                     +"Using constant values for the <code>nonce</code> parameter de-facto disables its anti-replay attacks protection, then "
@@ -2508,10 +2751,10 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                     new IHttpRequestResponse[] {callbacks.applyMarkers(baseRequestResponse, requestHighlights, null), callbacks.applyMarkers(checkRequestResponse, null, null) },
                                     "OpenID Flow Nonce Parameter not Evaluated",
                                     "The OpenID Flow is improperly implemented because the Authorization Server does not validates "
-                                    +"the <code>nonce</code> parameter on login requests.\n<br>"
+                                    +"the <code>nonce</code> parameter on login requests.\n<br><br>"
                                     +"In details, the Authorization Server successfully accepted both a request containing the <code>nonce</code> "
-                                    +"parameter value " +nonceValue+" and also a request without any <code>nonce</code> parameter."
-                                    +"Based on OpenID specifications the <code>nonce</code> parameter should be randomic and unique per client session "
+                                    +"parameter value <b>" +nonceValue+"</b> and also a request without any <code>nonce</code> parameter.<br><br>"
+                                    +"Based on OpenID specifications the <code>nonce</code> parameter should be unguessable and unique per client session "
                                     +"in order to provide a security mitigation against replay attacks.\nNot validating the <code>nonce</code> values "
                                     +"de-facto disables its protections and increases the attack surface of the OpenID service.\n<br>"
                                     +"<br>References:<br>"
@@ -2586,14 +2829,14 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                             baseRequestResponse.getHttpService(),
                             helpers.analyzeRequest(baseRequestResponse).getUrl(), 
                             new IHttpRequestResponse[] { callbacks.applyMarkers(checkRequestResponse, requestHighlights, activeScanMatches) }, 
-                            "OpenID Misconfiguration - Response Type set to None Accepted",
-                            "Found a misconfiguration on OpenID Flow when request parameter <code>response_type</code> value is set to <b>none</b>.\n<br>"
-                            +"The Authorization Server does not rejects the requests contaning the parameter:\n <b>"+ payload_resptypenone +"</b>\n, "
-                            +"and instead it returns a valid authorization code or access token in response.\n<br>"
+                            "OpenID Misconfiguration Response Type set to None Accepted",
+                            "Found a misconfiguration on OpenID Flow when request parameter <code>response_type</code> value is set to <b>none</b>.\n<br><br>"
+                            +"In details, the Authorization Server does not rejects the requests contaning the <code>response_type</code> value of <b>"+ payload_resptypenone +"</b>\n, "
+                            +"and instead it releases a valid authorization code or access token in response.\n<br><br>"
                             +"OpenID specifications require that when the <code>response_type</code> parameter is set to <b>none</b> "
                             +"the Authorization Server should never release authorization codes or access tokens to the Client-Application\n<br>"
-                            +"<br>References:\n<ul>"
-                            +"<li><a href=\"https://openid.net/specs/oauth-v2-multiple-response-types-1_0.html#none\">https://openid.net/specs/oauth-v2-multiple-response-types-1_0.html#none</a></li></ul>",
+                            +"<br>References:\n<br>"
+                            +"<a href=\"https://openid.net/specs/oauth-v2-multiple-response-types-1_0.html#none\">https://openid.net/specs/oauth-v2-multiple-response-types-1_0.html#none</a>",
                             "Low",
                             "Certain"));
                     }
@@ -2671,16 +2914,16 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                     +"Care must be taken when exposing the OpenID WebFinger service, because "
                                     +"it could potentially increase the attack surface of the OpenID service, and allow "
                                     +"unauthenticated users to retrieve information about registered accounts and resources\n<br><br>"
-                                    +"Querying it revealed that the \""+username+"\" account is enabled on the server.\n<br>"
-                                    +"The configuration file was found at URL:\n <b>"+ origin+"/"+payload_url +"</b>\n<br><br>"
+                                    +"In details, by querying the WebFinger it reveals that the <b>"+username+"</b> account is enabled on the OpenID server, "
+                                    +"in particular the configuration file was found at URL <b>"+ origin+"/"+payload_url +"</b>.\n<br><br>"
                                     +"Note that there are various possible attacks against OpenID WebFinger, for example:<br><ul>"
-                                    +"<li>User Enumeration by sending requests as <code>/.well-known/webfinger?resource=http://URL/USERNAME&rel=http://openid.net/specs/connect/1.0/issuer</code>"
+                                    +"<li>Direct user enumeration by sending requests as <code>/.well-known/webfinger?resource=http://URL/USERNAME&rel=http://openid.net/specs/connect/1.0/issuer</code>"
                                     +"or <code>/.well-known/webfinger?resource=acct:USERNAME@URL&rel=http://openid.net/specs/connect/1.0/issuer</code></li>"
                                     +"<li>LDAP inj by sending requests as <code>/.well-known/webfinger?resource=http://URL/mar*&rel=http://openid.net/specs/connect/1.0/issuer</code></li>"
                                     +"<li>SQL inj by sending requests as <code>/.well-known/webfinger?resource=http://x/mario'&rel=http://openid.net/specs/connect/1.0/issuer</code></li></ul>"
-                                    +"<br>References:\n<ul>"
-                                    +"<li><a href=\"https://openid.net/specs/openid-connect-discovery-1_0.html\">https://openid.net/specs/openid-connect-discovery-1_0.html</a></li></ul>"
-                                    +"<li><a href=\"https://datatracker.ietf.org/doc/html/rfc7033\">https://datatracker.ietf.org/doc/html/rfc7033</a></li></ul>",
+                                    +"<br>References:\n<br>"
+                                    +"<a href=\"https://openid.net/specs/openid-connect-discovery-1_0.html\">https://openid.net/specs/openid-connect-discovery-1_0.html</a><br>"
+                                    +"<a href=\"https://datatracker.ietf.org/doc/html/rfc7033\">https://datatracker.ietf.org/doc/html/rfc7033</a>",
                                     "Information",
                                     "Certain"
                                 ));
@@ -2709,11 +2952,11 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 helpers.analyzeRequest(baseRequestResponse).getUrl(), 
                                 new IHttpRequestResponse[] { callbacks.applyMarkers(checkRequestResponse, requestHighlights, null) }, 
                                 "OpenID Configuration Files in Well-Known URLs",
-                                "Found OpenID configuration file publicly exposed on some well known urls.\n<br>"
+                                "Found OpenID configuration file publicly exposed on some well known urls.\n<br><br>"
+                                +"In details, the configuration file was found at URL:\n <b>"+ origin+"/"+payload_url +"</b>.\n<br><br>"
                                 +"The retrieved JSON configuration file contains some key information, such as details of "
                                 +"additional features that may be supported.\n These files will sometimes give hints "
                                 +"about a wider attack surface and supported features that may not be mentioned in the documentation.\n<br>"
-                                +"The configuration file was found at URL:\n <b>"+ origin+"/"+payload_url +"</b>\n<br>"
                                 +"<br>References:\n<ul>"
                                 +"<li><a href=\"https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderConfigurationRequest\">https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderConfigurationRequest</a></li></ul>",
                                 "Information",
@@ -2725,11 +2968,11 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 helpers.analyzeRequest(baseRequestResponse).getUrl(), 
                                 new IHttpRequestResponse[] { callbacks.applyMarkers(checkRequestResponse, requestHighlights, null) }, 
                                 "OAUTHv2 Configuration Files in Well-Known URLs",
-                                "Found OAUTHv2 configuration file publicly exposed on some well known urls.\n<br>"
+                                "Found OAUTHv2 configuration file publicly exposed on some well known urls.\n<br><br>"
+                                +"In details, the configuration file was found at URL:\n <b>"+ origin+"/"+payload_url +"</b>.\n<br><bR>"
                                 +"The retrieved JSON configuration file contains some key information, such as details of "
                                 +"additional features that may be supported.\n These files will sometimes give hints "
                                 +"about a wider attack surface and supported features that may not be mentioned in the documentation.\n<br>"
-                                +"The configuration file was found at URL:\n <b>"+ origin+"/"+payload_url +"</b>\n<br>"
                                 +"<br>References:\n<ul>"
                                 +"<li><a href=\"https://tools.ietf.org/id/draft-ietf-oauth-discovery-08.html#:~:text=well%2Dknown%2Foauth%2Dauthorization,will%20use%20for%20this%20purpose.\">https://tools.ietf.org/id/draft-ietf-oauth-discovery-08.html#:~:text=well%2Dknown%2Foauth%2Dauthorization,will%20use%20for%20this%20purpose.</a></li></ul>",
                                 "Information",
@@ -2745,13 +2988,10 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
 
 
 
-    public List<IScanIssue> requriScan(IHttpRequestResponse baseRequestResponse, IScannerInsertionPoint insertionPoint) {
+    public void requriScan(IHttpRequestResponse baseRequestResponse, IScannerInsertionPoint insertionPoint) {
         // Scan for authorization code replay issues on token requests for OAUTHv2 and OpenID Authorization Code and Hybrid Flows
-        List<IScanIssue> issues = new ArrayList<>();
         int[] payloadOffset = new int[2];
-        Boolean isOpenID = false;
         IParameter requriParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "request_uri");
-        IParameter scopeParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "scope");
         IParameter resptypeParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "response_type");
         IParameter clientIdParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "client_id");
         if ((resptypeParameter!=null & clientIdParameter!=null)) {
@@ -2760,22 +3000,15 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                 stdout.println("[+] Active Scan: Checking for Request Uri SSRF issues");
                 // Build the request for the check 
                 byte[] checkRequest = baseRequestResponse.getRequest();
-                // Determine if is OpenID Flow
-                if (scopeParameter!=null) {
-                    if (scopeParameter.getValue().contains("openid")) {
-                        isOpenID = true;
-                    }
-                } else if (helpers.urlDecode(resptypeParameter.getValue()).contains("id_token") || helpers.urlDecode(resptypeParameter.getValue()).equals("code token")) {
-                    isOpenID = true;
-                }
                 if (requriParameter!=null) {
                     // Remove the 'request_uri' parameter if present on the authorization request 
                     checkRequest = helpers.removeParameter(checkRequest, requriParameter);
                 }
                 // Adding a malicious 'request_uri' parameter
                 byte parameterType = resptypeParameter.getType();
-                String randomValue = randomString(10);
-                String checkRequriValue = "https://oauthscan"+randomValue+".burpcollaborator.net/requesturi.jwt";
+                IBurpCollaboratorClientContext collCC = callbacks.createBurpCollaboratorClientContext();
+                String collHostname = collCC.generatePayload(true);
+                String checkRequriValue = "https://" + collHostname + "/requesturi.jwt";
                 IParameter checkRequriParameter = helpers.buildParameter("request_uri", checkRequriValue, parameterType);
                 checkRequest = helpers.addParameter(checkRequest, checkRequriParameter);
                 String checkRequestStr = helpers.bytesToString(checkRequest);
@@ -2785,66 +3018,73 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                 payloadOffset[0] = payloadStart;
                 payloadOffset[1] = payloadStart+checkRequriValue.length();
                 requestHighlights.add(payloadOffset);
-                if (isOpenID) {
-                    // Sent the malicious 'request_uri' parameter to OpenID Provider 
-                    // and then waiting for burpcollaborator warnings
-                    issues.add(new CustomScanIssue(
-                    baseRequestResponse.getHttpService(),
-                    helpers.analyzeRequest(baseRequestResponse).getUrl(), 
-                    new IHttpRequestResponse[] {callbacks.applyMarkers(checkRequestResponse, requestHighlights, null) },
-                    "OpenID Flow Checking SSRF via Request_Uri",
-                    "A request containing the parameter <code>request_uri</code> set to the value <b>"+checkRequriValue+"</b> was"
-                    +"sent to the OpenID Provider in order to verify if it is vulnerable to blind SSRF issues.\n<br>"
-                    +"If the OpenID Provider will interacts (via DNS or HTTP) with the remote BurpCollabortor server specified on  "
-                    +"the <code>request_uri</code> parameter, then it is confirmed to be vulnerable.\n<br>"
-                    +"Based on OpenID specifications the value of the <code>request_uri</code> parameter "
-                    +"is set to an URI pointing to a server hosting a JWT which contains the client's parameter values. "
-                    +"In this way the OpenID Provider can fetch the provided URI and retrieve the Request-Object "
-                    +"by parsing the JWT contents.\n<br>"
-                    +"For security reasons the URI value of <code>request_uri</code> parameter should be carefully validated "
-                    +"at server-side, otherwise a threat agent could be able to lead the OpenID Provider to interact with "
-                    +"an arbitrary server under is control and then potentially exploit SSRF vulnerabilities.\n<br>"
-                    +"As mitigation the OpenID Provider should define a whitelist of allowed URI values (pre-registered "
-                    +"during the client registration process) for the <code>request_uri</code> parameter.\n<br>"
-                    +"<br>References:<br>"
-                    +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#rfc.section.6.2\">https://openid.net/specs/openid-connect-core-1_0.html#rfc.section.6.2</a>"
-                    +"<a href=\"https://portswigger.net/research/hidden-oauth-attack-vectors\">https://portswigger.net/research/hidden-oauth-attack-vectors</a>",
-                    "High",
-                    "Tentative"));
-                } else {
-                    // Sent the malicious 'request_uri' parameter to OAUTHv2 Provider
-                    // and then waiting for burpcollaborator warnings
-                    issues.add(new CustomScanIssue(
-                    baseRequestResponse.getHttpService(),
-                    helpers.analyzeRequest(baseRequestResponse).getUrl(), 
-                    new IHttpRequestResponse[] {callbacks.applyMarkers(checkRequestResponse, requestHighlights, null) },
-                    "OAUTHv2 Flow Checking SSRF via Request_Uri",
-                    "A request containing the parameter <code>request_uri</code> set to the value <b>"+checkRequriValue+"</b> was"
-                    +"sent to the OAUTHv2 Provider in order to verify if it is vulnerable to blind SSRF issues.\n<br>"
-                    +"If the OAUTHv2 Provider will interacts (via DNS or HTTP) with the remote BurpCollabortor server specified on "
-                    +"the <code>request_uri</code> parameter, then it is confirmed to be vulnerable.\n<br>"
-                    +"Based on OAUTHv2 specifications the value of the <code>request_uri</code> parameter "
-                    +"is set to an URI pointing to a server hosting a JWT which contains the client's parameter values. "
-                    +"In this way the OAUTHv2 Provider can fetch the provided URI and retrieve the Request-Object "
-                    +"by parsing the JWT contents.\n<br>"
-                    +"For security reasons the URI value of <code>request_uri</code> parameter should be carefully validated "
-                    +"at server-side, otherwise a threat agent could be able to lead the OAUTHv2 Provider to interact with "
-                    +"an arbitrary server under is control and then potentially exploit SSRF vulnerabilities.\n<br>"
-                    +"As mitigation the OAUTHv2 Provider should define a whitelist of allowed URI values (pre-registered "
-                    +"during the client registration process) for the <code>request_uri</code> parameter.\n<br>"
-                    +"<br>References:<br>"
-                    +"<a href=\"https://tools.ietf.org/html/draft-lodderstedt-oauth-par\">https://tools.ietf.org/html/draft-lodderstedt-oauth-par</a>"
-                    +"<a href=\"https://portswigger.net/research/hidden-oauth-attack-vectors\">https://portswigger.net/research/hidden-oauth-attack-vectors</a>",
-                    "High",
-                    "Tentative"));
-                }
+                // Define a runnable object to handle collaborator interactions
+                Runnable collaboratorMonitor = new Runnable() {
+                    private List<String> collIssuesDetailsHistory = new ArrayList<>();
+                    public void addCollaboratorIssue(IBurpCollaboratorInteraction interaction, IBurpCollaboratorClientContext collaboratorContext) {
+                        // Generating the collaborator issue
+                        CustomScanIssue collIssue = null;
+                        String collIssueDetails = getCollaboratorIssueDetails(interaction, collaboratorContext);
+                        // Check to avoid duplicated collaborator issues
+                        if (!collIssuesDetailsHistory.contains(collIssueDetails)) {
+                            // Detected a burpcollaborator interaction caused by the malicious 'request_uri' parameter sent to OAUTHv2/OpenID Provider
+                            collIssue = new CustomScanIssue(
+                                checkRequestResponse.getHttpService(),
+                                callbacks.getHelpers().analyzeRequest(checkRequestResponse).getUrl(), 
+                                new IHttpRequestResponse[] {callbacks.applyMarkers(checkRequestResponse, requestHighlights, null) },
+                                "OAUTHv2/OpenID Flow SSRF via Request_Uri Detected",
+                                "A request containing the parameter <code>request_uri</code> set to an arbitrary URL value <b>"+checkRequriValue+"</b> was "
+                                +"sent to the OAUTHv2/OpenID Authorization Server. As consequence the OAUTHv2/OpenI Provider interacts with "
+                                +"the remote Collaborator server listening on the specified URL demonstrating that it is vulnerable to SSRF "
+                                +"blind issues.\n<br><br>In details, " + collIssueDetails + "<br><br>"
+                                +"For security reasons the URI value of <code>request_uri</code> parameter should be carefully validated "
+                                +"at server-side, otherwise an attacker could be able to lead the OAUTHv2/OpenID Provider to interact with "
+                                +"an arbitrary server under is control and then potentially exploit SSRF vulnerabilities.\n<br>"
+                                +"It is advisable to define a strict whitelist of allowed URI values (pre-registered "
+                                +"during the OAUTHv2/OpenID client registration process) for the <code>request_uri</code> parameter.\n<br>"
+                                +"<br>References:<br>"
+                                +"<a href=\"https://tools.ietf.org/html/draft-lodderstedt-oauth-par\">https://tools.ietf.org/html/draft-lodderstedt-oauth-par</a><br>"
+                                +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#rfc.section.6.2\">https://openid.net/specs/openid-connect-core-1_0.html#rfc.section.6.2</a><br>"
+                                +"<a href=\"https://portswigger.net/research/hidden-oauth-attack-vectors\">https://portswigger.net/research/hidden-oauth-attack-vectors</a>",
+                                "High",
+                                "Certain"
+                                );
+                        }
+                        // Finally add the new collaborator issue
+                        callbacks.addScanIssue(collIssue);
+                    }
+
+                    public void run() {
+                        stdout.println("[+] Collaborator Monitor thread started");
+                        try {
+                            long startTime = System.nanoTime();
+                            while ( ((System.nanoTime()-startTime) < (5*60*NANOSEC_PER_SEC)) & !Thread.currentThread().isInterrupted() ) {  
+                                // Loop for max 5 minutes to detect any interaction on burpcollaborator
+                                Thread.sleep(POLLING_INTERVAL);
+                                List<IBurpCollaboratorInteraction> allInteractions = collCC.fetchCollaboratorInteractionsFor(collHostname);
+                                for (IBurpCollaboratorInteraction interaction : allInteractions) {
+                                    // Add the new issue
+                                    addCollaboratorIssue(interaction, collCC);
+                                }
+                            }
+                        stdout.println("[+] Collaborator Monitor thread stopped");
+                        }
+                        catch (InterruptedException e) {
+                            stderr.println(e.toString());
+                            // This is a good practice
+                            Thread.currentThread().interrupt();
+                        }
+                        catch (Exception e) {
+                            stderr.println(e.toString());
+                        }
+                    }
+                };
+                // Then start the collaborator thread
+                collaboratorThread = new Thread(collaboratorMonitor);
+                collaboratorThread.start();
             }
         }
-        return issues;
     }
-
-
-
 
 
 
@@ -2853,7 +3093,6 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
     public List<IScanIssue> pkceScan(IHttpRequestResponse baseRequestResponse, IScannerInsertionPoint insertionPoint) {
         // Scan for PKCE downgrade issues on authorization requests for OAUTHv2 and OpenID Authorization Code and Hybrid Flows
         List<IScanIssue> issues = new ArrayList<>();
-        int[] payloadOffset = new int[2];
         Boolean isOpenID = false;
         IResponseVariations respVariations = null;
         Boolean respDiffers = false;
@@ -2864,7 +3103,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         IParameter clientIdParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "client_id");
         if ((resptypeParameter!=null & clientIdParameter!=null & codechallengeParameter!=null & challengemethodParameter!=null) ) {
             if (resptypeParameter.getValue().contains("code")) {
-                // Checking for request_uri SSRF issues on authorization requests of all OAUTHv2 and OpenID Flows
+                // Checking for pkce downgrade issues on authorization requests
                 byte[] originalResponse = baseRequestResponse.getResponse();
                 String originalResponseStr = helpers.bytesToString(originalResponse);
                 IResponseInfo originalRespInfo = helpers.analyzeResponse(originalResponse);
@@ -2888,7 +3127,6 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                     checkRequest = helpers.removeParameter(checkRequest, codechallengeParameter);
                     String codechallengeValue = codechallengeParameter.getValue();
                     String challengemethodValue = challengemethodParameter.getValue();
-                    String checkRequestStr = helpers.bytesToString(checkRequest);
                     IHttpRequestResponse checkRequestResponse = callbacks.makeHttpRequest(baseRequestResponse.getHttpService(), checkRequest);
                     byte [] checkResponse = checkRequestResponse.getResponse();
                     IResponseInfo checkRespInfo = helpers.analyzeResponse(checkResponse);
@@ -2910,56 +3148,53 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                             } 
                         }
                         if (!respDiffers) {
-                            List<int[]> requestHighlights = new ArrayList<>(1);
-                            int payloadStart = checkRequestStr.indexOf(codechallengeValue);
-                            payloadOffset[0] = payloadStart;
-                            payloadOffset[1] = payloadStart+codechallengeValue.length();
-                            requestHighlights.add(payloadOffset);
+                            List<int[]> activeScanMatches = getMatches(checkRequestResponse.getResponse(), codechallengeValue.getBytes());
+                            activeScanMatches.addAll(getMatches(checkRequestResponse.getResponse(), challengemethodValue.getBytes()));
                             if (isOpenID) {
                                 // Successful downgraded OpenID PKCE to plaintext
                                 issues.add(new CustomScanIssue(
                                     baseRequestResponse.getHttpService(),
                                     helpers.analyzeRequest(baseRequestResponse).getUrl(), 
-                                    new IHttpRequestResponse[] {callbacks.applyMarkers(baseRequestResponse, requestHighlights, null), callbacks.applyMarkers(checkRequestResponse, null, null) },
+                                    new IHttpRequestResponse[] {callbacks.applyMarkers(baseRequestResponse, activeScanMatches, null), callbacks.applyMarkers(checkRequestResponse, null, null) },
                                     "OpenID Flow PKCE Downgraded to Plaintext",
-                                    "The OpenID Flow results vulnerable to PKCE Downgrade attacks.\n<br><br>"
+                                    "The OpenID Flow results vulnerable to PKCE downgrade attacks, from <code>challenge_method_value</code> "
+                                    +"<b>"+challengemethodValue+"</b> to <b>plain</b>.\n<br><br>"
+                                    +"In details, the OpenID Authorization Server accepted successfully both an authorization request having the PKCE parameter "
+                                    +"<code>code_challenge</code> set to the value <b>"+codechallengeValue+"</b> and also a request without it.\n<br><br>"
                                     +"When OpenID Flows supports PKCE but does not make its use mandatory, the Authorization Server accepts authorization requests "
                                     +"without the PKCE <code>code_challenge</code> parameter and returns a valid authorization <code>code</code> in response, "
                                     +"because it assumes that the <b>plain</b> challenge method is in use "
-                                    +"(this means <code>code_challenge</code> = <code>code_verifier</code>).\n<br><br> "
-                                    +"In details, the Authorization Server accepted successfully both an authorization request having the PKCE parameter "
-                                    +"<code>code_challenge</code> set to the value <b>"+codechallengeValue+"</b> (and the parameter <code>challenge_method_value</code> "
-                                    +"set to <b>"+challengemethodValue+"</b>), and also a request without it.\n<br><br>"
-                                    +"A threat agent could exploit this issue in order to defeat the PKCE protections against authorization code "
-                                    +"interception attacks.\n<br>"
+                                    +"(this means <code>code_challenge</code> = <code>code_verifier</code>).\n<br> "
+                                    +"A threat agent could exploit this issue in order to defeat the PKCE protections against authorization code interception attacks.\n<br>"
                                     +"In Mobile, Native desktop and SPA contexts is a security requirement to use OpenID Authorization Code Flow with PKCE extension "
                                     +"or alternatively to use OpenID Hybrid Flow.\n<br>"
                                     +"<br>References:<br>"
                                     +"<a href=\"https://openid.net/specs/openid-igov-oauth2-1_0-02.html#rfc.section.3.1.7\">https://openid.net/specs/openid-igov-oauth2-1_0-02.html#rfc.section.3.1.7</a>",
                                     "Medium",
-                                    "Certain"));
+                                    "Certain"
+                                ));
                             } else {
                                 // Successful downgraded OAUTHv2 PKCE to plaintext
                                 issues.add(new CustomScanIssue(
                                     baseRequestResponse.getHttpService(),
                                     helpers.analyzeRequest(baseRequestResponse).getUrl(), 
-                                    new IHttpRequestResponse[] {callbacks.applyMarkers(baseRequestResponse, requestHighlights, null), callbacks.applyMarkers(checkRequestResponse, null, null) },
+                                    new IHttpRequestResponse[] {callbacks.applyMarkers(baseRequestResponse, activeScanMatches, null), callbacks.applyMarkers(checkRequestResponse, null, null) },
                                     "OAUTHv2 Flow PKCE Downgraded to Plaintext",
-                                    "The OAUTHv2 Flow results vulnerable to PKCE Downgrade attacks.\n<br><br>"
+                                    "The OAUTHv2 Flow results vulnerable to PKCE Downgrade attacks, from <code>challenge_method_value</code> "
+                                    +"<b>"+challengemethodValue+"</b> to <b>plain</b>.\n<br><br>"
+                                    +"In details, the OAUTHv2 Authorization Server accepted successfully both an authorization request having the PKCE parameter "
+                                    +"<code>code_challenge</code> set to the value <b>"+codechallengeValue+"</b> and also a request without it.\n<br><br>"
                                     +"When OAUTHv2 Flows supports PKCE but does not make its use mandatory, the Authorization Server accepts authorization requests "
                                     +"without the PKCE <code>code_challenge</code> parameter and returns a valid authorization <code>code</code> in response, "
                                     +"because it assumes that the <b>plain</b> challenge method is in use "
-                                    +"(this means <code>code_challenge</code> = <code>code_verifier</code>).\n<br><br> "
-                                    +"In details, the Authorization Server accepted successfully both an authorization request having the PKCE parameter "
-                                    +"<code>code_challenge</code> set to the value <b>"+codechallengeValue+"</b> (and the parameter <code>challenge_method_value</code> "
-                                    +"set to <b>"+challengemethodValue+"</b>), and also a request without it.\n<br><br>"
-                                    +"A threat agent could exploit this issue in order to defeat the PKCE protections against authorization code "
-                                    +"interception attacks.\n<br>"
+                                    +"(this means <code>code_challenge</code> = <code>code_verifier</code>).\n<br> "
+                                    +"A threat agent could exploit this issue in order to defeat the PKCE protections against authorization code interception attacks.\n<br>"
                                     +"In Mobile, Native desktop and SPA contexts is a security requirement to use OAUTHv2 Authorization Code Flow with PKCE extension.\n<br>"
                                     +"<br>References:<br>"
                                     +"<a href=\"https://datatracker.ietf.org/doc/html/rfc7636\">https://datatracker.ietf.org/doc/html/rfc7636</a>",
                                     "Medium",
-                                    "Certain"));
+                                    "Certain"
+                                ));
                             }
                         }
                     }
@@ -2968,6 +3203,8 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         }
         return issues;
     }
+
+
 
 
 
@@ -2982,15 +3219,14 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
             List<IScanIssue> nonceResults = nonceScan(baseRequestResponse, insertionPoint);
             List<IScanIssue> resptypeResults = resptypeScan(baseRequestResponse, insertionPoint);
             List<IScanIssue> wellknownResults = wellknownScan(baseRequestResponse, insertionPoint);
-            List<IScanIssue> requriResults = requriScan(baseRequestResponse, insertionPoint);
             List<IScanIssue> pkceResults = pkceScan(baseRequestResponse, insertionPoint);
+            requriScan(baseRequestResponse, insertionPoint);
             issues.addAll(redirResults);
             issues.addAll(scopeResults);
             issues.addAll(codereplayResults);
             issues.addAll(nonceResults);
             issues.addAll(resptypeResults);
             issues.addAll(wellknownResults);
-            issues.addAll(requriResults);
             issues.addAll(pkceResults);
         } catch (Exception exc) {
             exc.printStackTrace(stderr);
@@ -3014,7 +3250,8 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
 
     @Override
     public void extensionUnloaded() {
-        // Unload the plugin
+        // Unload the plugin and stop running thread
+        collaboratorThread.interrupt();
         stdout.println("[+] OAUTHScan Plugin Unloaded");
     }
 
@@ -3086,17 +3323,18 @@ class CustomScanIssue implements IScanIssue
 	@Override
 	public String getIssueBackground()
 	{
-        return "OAUTH 2.0 is an open standard (RFC 6749) that allows applications to get access to protected "
-        +"resources and APIs on behalf of users without accessing their credentials.\n"
+        return "OAUTHv2 is an open standard that allows applications to get access to protected "
+        +"resources and APIs on behalf of users without accessing their credentials.\n "
         +"OAUTHv2 defines overarching schemas for granting authorization but does not describes how "
         +"to actually perform authentication.\nOpenID instead is an OAUTHv2 extension which striclty defines some "
         +"authentication patterns to grant access to users by authenticating them through another service "
-        +"or provider.\n"
-        +"There are many different ways to implement OAUTHv2 and OpenID login processes. They are widely "
+        +"or provider.\n "
+        +"There are many different ways to implement OAUTHv2 and OpenID login procedures. They are widely "
         +"supported by identity providers and API vendors and could be used in various contexts"
-        +"as in Web, Mobile, and Desktop applications.\nCause of their complexity and versatility, OAUTHv2 "
-        +"and OpenID are both extremely common and inherently prone to implementation mistakes. This can result "
-        +"in various kind of vulnerabilities, allowing attackers to obtain confidential user data and "
+        +"(as for Web, Mobile, Native desktop applications, etc.).\n "
+        +"Cause of their complexity and versatility, OAUTHv2 and OpenID are both extremely common "
+        +"and inherently prone to implementation mistakes, and this can result in various kind of "
+        +"vulnerabilities, which in some cases could allow attackers to obtain reserved data and/or "
         +"potentially completely bypass authentication.";
 	}
 
@@ -3104,10 +3342,10 @@ class CustomScanIssue implements IScanIssue
 	public String getRemediationBackground()
 	{
 		return "To prevent OAUTHv2 and OpenID security issues, it is essential for the involved entities "
-        +"(OAUTHv2/OpenID Service-Provider and Client-Application) to implement robust validation of the key inputs. Given their "
+        +"(Service-Provider and Client-Application) to implement robust validation of the key inputs. Given their "
         +"complexity, it is important for developers to implement carefully OAUTHv2 and OpenID to make them "
-        +"as secure as possible.\nIt is important to note that vulnerabilities can arise both on "
-        +"the side of the Client-Application and the Service-Provider itself. "
+        +"as secure as possible.\n It is important to note that vulnerabilities can arise both on "
+        +"the side of the Client-Application and the Service-Provider itself.\n "
         +"Even if your own implementation is rock solid, you're still ultimately reliant on the "
         +"application at the other end being equally robust.\n<br><br>"
         +"For OAUTHv2/OpenID Service-Providers:\n"
