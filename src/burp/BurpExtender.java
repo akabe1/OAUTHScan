@@ -413,7 +413,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                     pattern = Pattern.compile("[&\\?]?" + paramName + "=([A-Za-z0-9\\-_\\.~\\+/]+)[&]?");
                 } else if (mimeType.toLowerCase().contains("json")) {
                     // Parameter in Json body
-                    pattern = Pattern.compile("['\"]{1}" + paramName + "['\"]{1}[\\s]*:[\\s]*['\"]{1}([A-Za-z0-9\\-_\\.~\\+/]+)['\"]{1}");
+                    pattern = Pattern.compile("['\"]{1}" + paramName + "['\"]{1}[\\s]*:[\\s]*['\"]?([A-Za-z0-9\\-_\\.~\\+/]+)['\"]?");
                 } else if (mimeType.contains("xml") ) {
                     // Parameter in xml body
                     pattern = Pattern.compile("<" + paramName + ">[\\s\\n]<([A-Za-z0-9\\-_\\.~\\+/]+)>");
@@ -526,87 +526,40 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
 
 
             // Searching for HTTP responses releasing secret tokens in body or Location header
-            if (!respBody.isEmpty() || respInfo.getStatusCode() ==302) {
-                // Checking for Duplicate Token value issues on OAUTHv2 and OpenID
-                if (! GOTTOKENS.isEmpty()) {
-                    String respDate = getHttpHeaderValueFromList(respHeaders, "Date");
-                    if (getHttpHeaderValueFromList(respHeaders, "Date") == null) {
-                        // This is needed to avoid null values on respDate
-                        respDate = Long.toString(currentTimeStampMillis);
-                    }
-                    // Start searching if last issued secret token is a duplicated of already received tokens
-                    for (Map.Entry<String,List<String>> entry : GOTTOKENS.entrySet()) {
-                        List<String> tokenList = entry.getValue();
-                        String tokenDate = entry.getKey();
-                        for (String tokenValue: tokenList) {
-                            if (responseString.toLowerCase().contains(tokenValue) & (! tokenDate.equals(respDate))) {
-                                // This OAUTHv2/OpenID Flow response contains an already released Secret Token
-                                List<int[]> matches = getMatches(responseString.getBytes(), tokenValue.getBytes());
-                                issues.add(
-                                    new CustomScanIssue(
-                                        baseRequestResponse.getHttpService(),
-                                        helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
-                                        "OAUTHv2/OpenID Duplicate Secret Token Value Detected",
-                                        "The Authorization Server seems issuing duplicate secret token (Access or Refersh Token) values "
-                                        +"after successfully completion of OAUTHv2/OpenID login procedure.\n<br>"
-                                        +"In details, the response contains the following secret token value <b>"+tokenValue+"</b> which was already released.\n<br>"
-                                        +"For security reasons the OAUTHv2/OpenID specifications require that secret token must be unique for each user's session.\n<br>"
-                                        +"Note: this issue should be <b>confirmed manually</b> by searching the duplicated secret token "
-                                        +"values in the burp-proxy history.\n<br>"
-                                        +"<br>References:<br>"
-                                        +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6749\">https://datatracker.ietf.org/doc/html/rfc6749</a><br>"
-                                        +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
-                                        "Medium",
-                                        "Firm"
-                                    )
-                                );
-                            }
+            if (!respBody.isEmpty() || respInfo.getStatusCode()==302) {
+                // Considering only responses returning secret tokens
+                if (grantParameter!=null || (resptypeParameter.getValue().equals("token") || resptypeParameter.getValue().equals("id_token") || helpers.urlDecode(resptypeParameter.getValue()).equals("id_token token"))) {
+                    // Checking for Duplicate Token value issues on OAUTHv2 and OpenID
+                    if (! GOTTOKENS.isEmpty()) {
+                        String respDate = getHttpHeaderValueFromList(respHeaders, "Date");
+                        if (getHttpHeaderValueFromList(respHeaders, "Date") == null) {
+                            // This is needed to avoid null values on respDate
+                            respDate = Long.toString(currentTimeStampMillis);
                         }
-                    }
-                }
-                // Enumerate OAUTHv2/OpenID secret tokens returned by HTTP responses
-                String dateToken = getHttpHeaderValueFromList(respHeaders, "Date");
-                if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
-                    // This is needed to avoid null values on GOTTOKENS
-                    dateToken = Long.toString(currentTimeStampMillis);
-                }
-                List<String> foundTokens = new ArrayList<>();
-                for (String pName : SECRETTOKENS) {
-                    // Check if already got a token in same response (filtering by date)
-                    if (! GOTTOKENS.containsKey(dateToken)) {
-                        foundTokens.addAll(getMatchingParams(pName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
-                        foundTokens.addAll(getMatchingParams(pName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
-                        foundTokens.addAll(getMatchingParams(pName, pName, respBody, "link"));
-                        // Remove duplicate tokens found in same response
-                        foundTokens = new ArrayList<>(new HashSet<>(foundTokens));
-                        if (!foundTokens.isEmpty()) {
-                            GOTTOKENS.put(dateToken, foundTokens);
-                            // Check for weak secret tokens issues (guessable values)
-                            for (String fToken : foundTokens) {
-                                if (fToken.length()<6) {
-                                    // Found a weak secret token
-                                    List<int[]> requestHighlights = new ArrayList<>(1);
-                                    int[] tokenOffset = new int[2];
-                                    int tokenStart = requestString.indexOf(fToken);
-                                    tokenOffset[0] = tokenStart;
-                                    tokenOffset[1] = tokenStart+fToken.length();
-                                    requestHighlights.add(tokenOffset);
+                        // Start searching if last issued secret token is a duplicated of already received tokens
+                        for (Map.Entry<String,List<String>> entry : GOTTOKENS.entrySet()) {
+                            List<String> tokenList = entry.getValue();
+                            String tokenDate = entry.getKey();
+                            for (String tokenValue: tokenList) {
+                                if (responseString.toLowerCase().contains(tokenValue) & (! tokenDate.equals(respDate))) {
+                                    // This OAUTHv2/OpenID Flow response contains an already released Secret Token
+                                    List<int[]> matches = getMatches(responseString.getBytes(), tokenValue.getBytes());
                                     issues.add(
                                         new CustomScanIssue(
                                             baseRequestResponse.getHttpService(),
                                             helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
-                                            "OpenID Weak Secret Token Value Detected",
-                                            "The OpenID Flow presents a security misconfiguration, the Authorization Server releases weak secret token values "
-                                            +"(insufficient entropy) during OpenID login procedure.\n<br>"
-                                            +"In details the OpenID Flow response contains a secret token value of <b>"+fToken+"</b>.\n<br>"
-                                            +"Based on OpenID specifications for security reasons the secret tokens must be unpredictable and unique "
-                                            +"per client session.\n<br>Since the secret token value is guessable (insufficient entropy) "
-                                            +"then the attack surface of the OpenID service increases.\n<br>"
+                                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
+                                            "OAUTHv2/OpenID Duplicate Secret Token Value Detected",
+                                            "The Authorization Server seems issuing duplicate secret token (Access or Refersh Token) values "
+                                            +"after successfully completion of OAUTHv2/OpenID login procedure.\n<br>"
+                                            +"In details, the response contains the following secret token value <b>"+tokenValue+"</b> which was already released.\n<br>"
+                                            +"For security reasons the OAUTHv2/OpenID specifications require that secret token must be unique for each user's session.\n<br>"
+                                            +"Note: this issue should be <b>confirmed manually</b> by searching the duplicated secret token "
+                                            +"values in the burp-proxy history.\n<br>"
                                             +"<br>References:<br>"
+                                            +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6749\">https://datatracker.ietf.org/doc/html/rfc6749</a><br>"
                                             +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
-                                            "High",
+                                            "Medium",
                                             "Firm"
                                         )
                                     );
@@ -614,73 +567,123 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                             }
                         }
                     }
-                }
-                // Checking for Lifetime issues on released Secret Tokens (Access and Refresh Tokens)
-                List<String> expirList = new ArrayList<>();
-                String dateExpir = getHttpHeaderValueFromList(respHeaders, "Date");
-                if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
-                    // This is needed to avoid null values on GOTEXPIRATIONS
-                    dateExpir = Long.toString(currentTimeStampMillis);
-                }
-                for (String pName : SECRETTOKENS) {
-                    for (String expName : EXPIRATIONS) {
-                        // Check if already got a expiration in same response (filtering by token name)
-                        if (! GOTEXPIRATIONS.containsKey(dateExpir)) {
-                            expirList.addAll(getMatchingParams(expName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
-                            expirList.addAll(getMatchingParams(expName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
-                            expirList.addAll(getMatchingParams(expName, pName, respBody, "link"));
-                            // Remove duplicate expiration times found in same response
-                            expirList = new ArrayList<>(new HashSet<>(expirList));
-                            if (!expirList.isEmpty()) {
-                                GOTEXPIRATIONS.put(dateExpir, expirList);
-                                // Checking for secret tokens with excessive expiration times 
-                                for (String expirTime : expirList) {
-                                    // Considering excessive an expiration greater than 2 hours
-                                    if (Integer.parseInt(expirTime) > 7200) {
-                                        List<int[]> matches = getMatches(responseString.getBytes(), expirTime.getBytes());
+                    // Enumerate OAUTHv2/OpenID secret tokens returned by HTTP responses
+                    String dateToken = getHttpHeaderValueFromList(respHeaders, "Date");
+                    if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
+                        // This is needed to avoid null values on GOTTOKENS
+                        dateToken = Long.toString(currentTimeStampMillis);
+                    }
+                    List<String> foundTokens = new ArrayList<>();
+                    for (String pName : SECRETTOKENS) {
+                        // Check if already got a token in same response (filtering by date)
+                        if (! GOTTOKENS.containsKey(dateToken)) {
+                            foundTokens.addAll(getMatchingParams(pName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
+                            foundTokens.addAll(getMatchingParams(pName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
+                            foundTokens.addAll(getMatchingParams(pName, pName, respBody, "link"));
+                            // Remove duplicate tokens found in same response
+                            foundTokens = new ArrayList<>(new HashSet<>(foundTokens));
+                            if (!foundTokens.isEmpty()) {
+                                GOTTOKENS.put(dateToken, foundTokens);
+                                // Check for weak secret tokens issues (guessable values)
+                                for (String fToken : foundTokens) {
+                                    if (fToken.length()<6) {
+                                        // Found a weak secret token
+                                        List<int[]> requestHighlights = new ArrayList<>(1);
+                                        int[] tokenOffset = new int[2];
+                                        int tokenStart = requestString.indexOf(fToken);
+                                        tokenOffset[0] = tokenStart;
+                                        tokenOffset[1] = tokenStart+fToken.length();
+                                        requestHighlights.add(tokenOffset);
                                         issues.add(
                                             new CustomScanIssue(
                                                 baseRequestResponse.getHttpService(),
                                                 helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
-                                                "OAUTHv2/OpenID Flow Excessive Lifetime for Secret Tokens",
-                                                "Detected an excessive lifetime for the OAUTHv2/OpenID secret tokens released after a successful login.\n<br> "
-                                                +"More specifically the issued secret token <b>"+pName+"</b> expires in <b>"+expirTime+"</b> seconds.\n<br> "
-                                                +"If possible, it is advisable to set an Access Token expiration time of an 1 hour, and set a Refresh Token expiration time of 2 hours\n<br>"
+                                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                                "OpenID Weak Secret Token Value Detected",
+                                                "The OpenID Flow presents a security misconfiguration, the Authorization Server releases weak secret token values "
+                                                +"(insufficient entropy) during OpenID login procedure.\n<br>"
+                                                +"In details the OpenID Flow response contains a secret token value of <b>"+fToken+"</b>.\n<br>"
+                                                +"Based on OpenID specifications for security reasons the secret tokens must be unpredictable and unique "
+                                                +"per client session.\n<br>Since the secret token value is guessable (insufficient entropy) "
+                                                +"then the attack surface of the OpenID service increases.\n<br>"
                                                 +"<br>References:<br>"
-                                                +"<a href=\"https://www.rfc-editor.org/rfc/rfc6819#page-54\">https://www.rfc-editor.org/rfc/rfc6819#page-54</a>",
-                                                "Medium",
+                                                +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html\">https://openid.net/specs/openid-connect-core-1_0.html</a>",
+                                                "High",
                                                 "Firm"
                                             )
                                         );
                                     }
                                 }
-                            } else {
-                                List<String> tokenList = new ArrayList<>();
-                                // Looking for released secret tokens on response
-                                tokenList.addAll(getMatchingParams(pName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
-                                tokenList.addAll(getMatchingParams(pName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
-                                tokenList.addAll(getMatchingParams(pName, pName, respBody, "link"));
-                                // Checking if a secret token is issued without expiration time (expirList is empty)
-                                if (!tokenList.isEmpty()) {
-                                    issues.add(
-                                        new CustomScanIssue(
-                                            baseRequestResponse.getHttpService(),
-                                            helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
-                                            "OAUTHv2/OpenID Flow Secret Tokens Without Expiration Parameter",
-                                            "It seems that after successuful login the Authorization Server releases a OAUTHv2/OpenID secret token which never expires.\n<br>"
-                                            +"More specifically, the secret token <b>"+pName+"</b> returned in response does not has associated an expiration <code>expires_in</code> parameter.\n<br> "
-                                            +"This issue could be a false positive, then it is suggested to double-check it manually.\n<br> "
-                                            +"If the Authorization Server releases secret tokens which never expire, it exposes the OAUTHv2/OpenID platform "
-                                            +"to various security risks of in case of accidental leakage of a secret token.\n<br>"
-                                            +"If possible it is advisable to force expiration for Access Token after 1 hour, and for Refresh Token after 2 hours\n<br>"
-                                            +"<br>References:<br>"
-                                            +"<a href=\"https://www.rfc-editor.org/rfc/rfc6819#page-54\">https://www.rfc-editor.org/rfc/rfc6819#page-54</a>",
-                                            "High",
-                                            "Firm"
-                                        )
-                                    );
+                            }
+                        }
+                    }
+                    // Checking for Lifetime issues on released Secret Tokens (Access and Refresh Tokens)
+                    List<String> expirList = new ArrayList<>();
+                    String dateExpir = getHttpHeaderValueFromList(respHeaders, "Date");
+                    if (getHttpHeaderValueFromList(respHeaders, "Date")==null) {
+                        // This is needed to avoid null values on GOTEXPIRATIONS
+                        dateExpir = Long.toString(currentTimeStampMillis);
+                    }
+                    for (String pName : SECRETTOKENS) {
+                        for (String expName : EXPIRATIONS) {
+                            // Check if already got a expiration in same response (filtering by token name)
+                            if (! GOTEXPIRATIONS.containsKey(dateExpir)) {
+                                expirList.addAll(getMatchingParams(expName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
+                                expirList.addAll(getMatchingParams(expName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
+                                expirList.addAll(getMatchingParams(expName, pName, respBody, "link"));
+                                // Remove duplicate expiration times found in same response
+                                expirList = new ArrayList<>(new HashSet<>(expirList));
+                                if (!expirList.isEmpty()) {
+                                    GOTEXPIRATIONS.put(dateExpir, expirList);
+                                    // Checking for secret tokens with excessive expiration times 
+                                    for (String expirTime : expirList) {
+                                        // Considering excessive an expiration greater than 2 hours
+                                        if (Integer.parseInt(expirTime) > 7200) {
+                                            List<int[]> matches = getMatches(responseString.getBytes(), expirTime.getBytes());
+                                            issues.add(
+                                                new CustomScanIssue(
+                                                    baseRequestResponse.getHttpService(),
+                                                    helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                                    new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, matches) },
+                                                    "OAUTHv2/OpenID Flow Excessive Lifetime for Secret Tokens",
+                                                    "Detected an excessive lifetime for the OAUTHv2/OpenID secret tokens released after a successful login.\n<br> "
+                                                    +"More specifically the issued secret token <b>"+pName+"</b> expires in <b>"+expirTime+"</b> seconds.\n<br> "
+                                                    +"If possible, it is advisable to set an Access Token expiration time of an 1 hour, and set a Refresh Token expiration time of 2 hours\n<br>"
+                                                    +"<br>References:<br>"
+                                                    +"<a href=\"https://www.rfc-editor.org/rfc/rfc6819#page-54\">https://www.rfc-editor.org/rfc/rfc6819#page-54</a>",
+                                                    "Medium",
+                                                    "Firm"
+                                                )
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    List<String> tokenList = new ArrayList<>();
+                                    // Looking for released secret tokens on response
+                                    tokenList.addAll(getMatchingParams(pName, pName, respBody, getHttpHeaderValueFromList(respHeaders, "Content-Type")));
+                                    tokenList.addAll(getMatchingParams(pName, pName, getHttpHeaderValueFromList(respHeaders, "Location"), "header"));
+                                    tokenList.addAll(getMatchingParams(pName, pName, respBody, "link"));
+                                    // Checking if a secret token is issued without expiration time (expirList is empty)
+                                    if (!tokenList.isEmpty()) {
+                                        issues.add(
+                                            new CustomScanIssue(
+                                                baseRequestResponse.getHttpService(),
+                                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                                "OAUTHv2/OpenID Flow Secret Tokens Without Expiration Parameter",
+                                                "It seems that after successuful login the Authorization Server releases a OAUTHv2/OpenID secret token which never expires.\n<br>"
+                                                +"More specifically, the secret token <b>"+pName+"</b> returned in response does not has associated an expiration <code>expires_in</code> parameter.\n<br> "
+                                                +"This issue could be a false positive, then it is suggested to double-check it manually.\n<br> "
+                                                +"If the Authorization Server releases secret tokens which never expire, it exposes the OAUTHv2/OpenID platform "
+                                                +"to various security risks of in case of accidental leakage of a secret token.\n<br>"
+                                                +"If possible it is advisable to force expiration for Access Token after 1 hour, and for Refresh Token after 2 hours\n<br>"
+                                                +"<br>References:<br>"
+                                                +"<a href=\"https://www.rfc-editor.org/rfc/rfc6819#page-54\">https://www.rfc-editor.org/rfc/rfc6819#page-54</a>",
+                                                "High",
+                                                "Firm"
+                                            )
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1196,7 +1199,6 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 "Certain"
                             )
                         );
-
 
 
                     // Checking OpenID Authorization Code Flow
