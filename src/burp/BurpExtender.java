@@ -648,7 +648,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                                     "OAUTHv2/OpenID Flow Excessive Lifetime for Secret Tokens",
                                                     "Detected an excessive lifetime for the OAUTHv2/OpenID secret tokens released after a successful login.\n<br> "
                                                     +"More specifically the issued secret token <b>"+pName+"</b> expires in <b>"+expirTime+"</b> seconds.\n<br> "
-                                                    +"If possible, it is advisable to set an Access Token expiration time of an 1 hour, and set a Refresh Token expiration time of 2 hours\n<br>"
+                                                    +"If possible, it is advisable to set an Access Token expiration time of an 1 hour, and for Refresh Token a max limit of 24 hours\n<br>"
                                                     +"<br>References:<br>"
                                                     +"<a href=\"https://www.rfc-editor.org/rfc/rfc6819#page-54\">https://www.rfc-editor.org/rfc/rfc6819#page-54</a>",
                                                     "Medium",
@@ -676,7 +676,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                                 +"This issue could be a false positive, then it is suggested to double-check it manually.\n<br> "
                                                 +"If the Authorization Server releases secret tokens which never expire, it exposes the OAUTHv2/OpenID platform "
                                                 +"to various security risks of in case of accidental leakage of a secret token.\n<br>"
-                                                +"If possible it is advisable to force expiration for Access Token after 1 hour, and for Refresh Token after 2 hours\n<br>"
+                                                +"If possible it is advisable to force expiration for Access Token after 1 hour, and for Refresh Token after max 24 hours\n<br>"
                                                 +"<br>References:<br>"
                                                 +"<a href=\"https://www.rfc-editor.org/rfc/rfc6819#page-54\">https://www.rfc-editor.org/rfc/rfc6819#page-54</a>",
                                                 "High",
@@ -3453,7 +3453,7 @@ class CustomScanIssue implements IScanIssue
         +"Keychain/Keystore for mobile apps, use browser in-memory for web apps, etc.). "
         +"It is discouraged to store tokens on browsers local storage, because they will be "
         +"accessible by Javascript (XSS)</li><li>If possible use short lived access tokens "
-        +"(i.e. expiration 30 minutes)</li>"
+        +"(i.e. expiration 30 minutes) and a max expiration time of 24 hours for refresh tokens</li>"
         +"<li>The OAUTHv2 Implicit Flow is insecure and considered deprecated by specifications, "
         +"avoid to use it and instead adopt OAUTHv2 Authorization Code Flow. "
         +"At the same times, developers should be careful when implementing OpenID Implicit Flow "
