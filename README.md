@@ -33,8 +33,13 @@ Below a non-exhaustive list of the check performed by OAUTHScan:
 
 
 # Installation
-After downloaded (or cloned) the OAUTHScan repository, build it using gradle, and finally import the generated 'OAUTHscan-1.0.jar' file via Burp Extender tab. Alternatively is possible to install it from official Burp App Store.
+After downloading (or cloning) the OAUTHScan git repository, build it using gradle, and finally import the generated 'OAUTHscan-1.0.jar' file via Burp Extender tab. Alternatively is possible to install it from the official Burp App Store.
 
+1. Install gradle using your distributions packagae manager, for MacOS: `brew install gradle` 
+2. git clone https://github.com/akabe1/OAUTHScan.git 
+3. cd OAUTHScan
+4. Build the jar file with Gradle using: gradle build 
+5. Load the OAUTH-X.X.jar file at `build/libs/` using Burp Extender 
 
 # Usage
 OAUTHScan is fully integrated with the Burp Scanner, after installed on Burp you have only to launch Passive or Active scans on your targeted request.
