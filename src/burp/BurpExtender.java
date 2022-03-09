@@ -3060,6 +3060,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         Boolean isOpenID = false;
         IResponseVariations respVariations = null;
         Boolean respDiffers = false;
+        int[] payloadOffset = new int[2];
         IParameter challengemethodParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "code_challenge_method");
         IParameter codechallengeParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "code_challenge");
         IParameter scopeParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "scope");
@@ -3113,19 +3114,22 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                             } 
                         }
                         if (!respDiffers) {
-                            List<int[]> activeScanMatches = getMatches(checkRequestResponse.getRequest(), codechallengeValue.getBytes());
-                            activeScanMatches.addAll(getMatches(checkRequestResponse.getRequest(), challengemethodValue.getBytes()));
+                            List<int[]> requestHighlights = new ArrayList<>(1);
+                            payloadOffset[0] = codechallengeParameter.getNameStart();
+                            payloadOffset[1] = codechallengeParameter.getValueEnd();
+                            requestHighlights.add(payloadOffset);
                             if (isOpenID) {
                                 // Successful downgraded OpenID PKCE to plaintext
                                 issues.add(new CustomScanIssue(
                                     baseRequestResponse.getHttpService(),
                                     helpers.analyzeRequest(baseRequestResponse).getUrl(), 
-                                    new IHttpRequestResponse[] {callbacks.applyMarkers(baseRequestResponse, null, null), callbacks.applyMarkers(checkRequestResponse, activeScanMatches, null) },
+                                    new IHttpRequestResponse[] {callbacks.applyMarkers(baseRequestResponse, requestHighlights, null), callbacks.applyMarkers(checkRequestResponse, null, null) },
                                     "OpenID Flow PKCE Downgraded to Plaintext",
-                                    "The OpenID Flow results vulnerable to PKCE downgrade attacks, from <code>code_challenge_method</code> "
-                                    +"<b>"+challengemethodValue+"</b> to <b>plain</b>.\n<br>"
-                                    +"In details, the OpenID Authorization Server accepted successfully both an authorization request having the PKCE parameter "
-                                    +"<code>code_challenge</code> set to the value <b>"+codechallengeValue+"</b> and also a downgraded request without it.\n<br>"
+                                    "The OpenID Flow results afflicted by PKCE downgrade vulnerability which allows to alter the original PKCE challenge method "
+                                    +"from a secure hash algorithm to plaintext, defeating the PKCE defences.\n<br>"
+                                    +"In details, the OpenID Authorization Server is configured to accept authorization requests having the <code>code_challenge_method</code> "
+                                    +"parameter set to <b>"+challengemethodValue+"</b> and the <code>code_challenge</code> parameter to <b>"+codechallengeValue+"</b>, "
+                                    +"but it also accepts downgraded authorization request withouth any <code>code_challenge</code> parameter (which is implicitly valued as plaintext).\n<br>"
                                     +"When OpenID Flows supports PKCE but does not make its use mandatory, the Authorization Server accepts authorization requests "
                                     +"without the PKCE <code>code_challenge</code> parameter and returns a valid authorization <code>code</code> in response, "
                                     +"because it assumes that the <b>plain</b> challenge method is in use "
@@ -3143,12 +3147,13 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 issues.add(new CustomScanIssue(
                                     baseRequestResponse.getHttpService(),
                                     helpers.analyzeRequest(baseRequestResponse).getUrl(), 
-                                    new IHttpRequestResponse[] {callbacks.applyMarkers(baseRequestResponse, activeScanMatches, null), callbacks.applyMarkers(checkRequestResponse, null, null) },
+                                    new IHttpRequestResponse[] {callbacks.applyMarkers(baseRequestResponse, requestHighlights, null), callbacks.applyMarkers(checkRequestResponse, null, null) },
                                     "OAUTHv2 Flow PKCE Downgraded to Plaintext",
-                                    "The OAUTHv2 Flow results vulnerable to PKCE Downgrade attacks, from <code>code_challenge_method</code> "
-                                    +"<b>"+challengemethodValue+"</b> to <b>plain</b>.\n<br>"
-                                    +"In details, the OAUTHv2 Authorization Server accepted successfully both an authorization request having the PKCE parameter "
-                                    +"<code>code_challenge</code> set to the value <b>"+codechallengeValue+"</b> and also a request without it.\n<br>"
+                                    "The OAUTHv2 Flow results afflicted by PKCE downgrade vulnerability which allows to alter the original PKCE challenge method "
+                                    +"from a secure hash algorithm to plaintext, defeating the PKCE defences.\n<br>"
+                                    +"In details, the OAUTHv2 Authorization Server is configured to accept authorization requests having the <code>code_challenge_method</code> "
+                                    +"parameter set to <b>"+challengemethodValue+"</b> and the <code>code_challenge</code> parameter to <b>"+codechallengeValue+"</b>, "
+                                    +"but it also accepts downgraded authorization request withouth any <code>code_challenge</code> parameter which is implicitly valued as <b>plain</b>.\n<br>"
                                     +"When OAUTHv2 Flows supports PKCE but does not make its use mandatory, the Authorization Server accepts authorization requests "
                                     +"without the PKCE <code>code_challenge</code> parameter and returns a valid authorization <code>code</code> in response, "
                                     +"because it assumes that the <b>plain</b> challenge method is in use "
