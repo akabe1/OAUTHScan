@@ -191,6 +191,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         WELL_KNOWN.add("/openam/.well-known/webfinger");
         WELL_KNOWN.add("/.well-known/host-meta");
         WELL_KNOWN.add("/.well-known/oidcdiscovery");
+        WELL_KNOWN.add("/organizations/v2.0/.well-known/openid-configuration");
         WELL_KNOWN.add("/.well-known/webfinger?resource=ORIGINCHANGEME/anonymous&rel=http://openid.net/specs/connect/1.0/issuer");
         WELL_KNOWN.add("/.well-known/webfinger?resource=acct:USERCHANGEME@URLCHANGEME&rel=http://openid.net/specs/connect/1.0/issuer");
     }
@@ -2776,7 +2777,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                     // Build the request to remove the nonce value
                     byte[] checkRequest_2 = baseRequestResponse.getRequest();
                     // Removing the nonce from request
-                    helpers.removeParameter(checkRequest_2, nonceParameter);
+                    checkRequest_2 = helpers.removeParameter(checkRequest_2, nonceParameter);
                     respDiffers = false;
                     IHttpRequestResponse checkRequestResponse_2 = callbacks.makeHttpRequest(baseRequestResponse.getHttpService(), checkRequest_2);
                     byte [] checkResponse_2 = checkRequestResponse_2.getResponse();
@@ -2810,7 +2811,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 new CustomScanIssue(
                                     baseRequestResponse.getHttpService(),
                                     helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                    new IHttpRequestResponse[] {callbacks.applyMarkers(baseRequestResponse, requestHighlights, null), callbacks.applyMarkers(checkRequestResponse, null, null) },
+                                    new IHttpRequestResponse[] {callbacks.applyMarkers(baseRequestResponse, requestHighlights, null), callbacks.applyMarkers(checkRequestResponse_2, null, null) },
                                     "OpenID Flow Nonce Parameter not Evaluated",
                                     "The OpenID Flow is improperly implemented because the Authorization Server does not validates "
                                     +"the <code>nonce</code> parameter on login requests.\n<br>"
@@ -2886,9 +2887,9 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                     // Check if vulnerable and report the issue
                     if ((activeScanMatches.size() > 0) & (!checkResponseStr.toLowerCase().contains("error"))) {
                         List<int[]> requestHighlights = new ArrayList<>(1);
-                        int payloadStart = checkRequestStr.indexOf(payload_resptypenone);
+                        int payloadStart = checkRequestStr.indexOf("response_type=none");
                         payloadOffset[0] = payloadStart;
-                        payloadOffset[1] = payloadStart+payload_resptypenone.length();
+                        payloadOffset[1] = payloadStart+("response_type=none").length();
                         requestHighlights.add(payloadOffset);
                         issues.add(new CustomScanIssue(
                             baseRequestResponse.getHttpService(),
@@ -2903,7 +2904,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                             +"<br>References:\n<br>"
                             +"<a href=\"https://openid.net/specs/oauth-v2-multiple-response-types-1_0.html#none\">https://openid.net/specs/oauth-v2-multiple-response-types-1_0.html#none</a>",
                             "Low",
-                            "Certain"));
+                            "Firm"));
                     }
                 }
             }          
@@ -3451,7 +3452,9 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
             List<IScanIssue> pkceResults = pkceScan(baseRequestResponse, insertionPoint);
             List<IScanIssue> acrResults = acrScan(baseRequestResponse, insertionPoint);
 
+            // This kind of scan does not return result values
             requriScan(baseRequestResponse, insertionPoint);
+            
             issues.addAll(redirResults);
             issues.addAll(scopeResults);
             issues.addAll(codereplayResults);
