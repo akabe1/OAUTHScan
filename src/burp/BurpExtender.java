@@ -524,6 +524,29 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         IParameter respmodeParameter = helpers.getRequestParameter(baseRequestResponse.getRequest(), "response_mode");
 
 
+        // Searching for ".well-known" resources of OAUTHv2/OpenID flows
+        URL requrl = reqInfo.getUrl();
+        String reqpath = requrl.getPath();
+        if (reqpath!=null && helpers.urlDecode(reqpath).contains("/.well-known/") && respInfo.getStatusCode()==200) {
+            // Found well-known url in OAUTHv2/OpenID Flow 
+            issues.add(new CustomScanIssue(
+                baseRequestResponse.getHttpService(),
+                helpers.analyzeRequest(baseRequestResponse).getUrl(), 
+                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) }, 
+                "OAUTHv2/OpenID Configuration Files in Well-Known URLs",
+                "Found OAUTHv2/OpenID configuration file publicly exposed on some well known urls.\n<br>"
+                +"In details, the configuration file was found at URL:\n <b>"+ requrl +"</b>.\n<br>"
+                +"The retrieved JSON configuration file contains some key information, such as details of "
+                +"additional features that may be supported.\n These files will sometimes give hints "
+                +"about a wider attack surface and supported features that may not be mentioned in the documentation.\n<br>"
+                +"<br>References:\n<ul>"
+                +"<li><a href=\"https://tools.ietf.org/id/draft-ietf-oauth-discovery-08.html#:~:text=well%2Dknown%2Foauth%2Dauthorization,will%20use%20for%20this%20purpose.\">https://tools.ietf.org/id/draft-ietf-oauth-discovery-08.html#:~:text=well%2Dknown%2Foauth%2Dauthorization,will%20use%20for%20this%20purpose.</a></li>"
+                +"<li><a href=\"https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderConfigurationRequest\">https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderConfigurationRequest</a></li></ul>",
+                "Information",
+                "Certain")); 
+        }
+
+
         // Considering only OAUTHv2/OpenID Flow authorization and token requests
         if (clientidParameter!=null || grantParameter!=null || resptypeParameter!=null ) {
             // Determining if request belongs to a OpenID Flow
