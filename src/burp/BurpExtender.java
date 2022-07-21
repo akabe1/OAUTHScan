@@ -2223,7 +2223,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                     helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                     new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
                                     "OAUTHv2/OpenID Leakage of Authorization Code on Referer Header",
-                                    "The request improperly exposes the following OAUTHv2 authorization code "
+                                    "The request improperly exposes the following OAUTHv2/OpenID authorization code "
                                     +"on its Referer header: <b>"+codeValue+"</b>, then a threat agent could be able retrieve it and "
                                     +"potentially gain access to private resources of victim users.",
                                     "Medium",
@@ -2245,7 +2245,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                 new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
                                 "OAUTHv2/OpenID Leakage of Authorization Code in URL Query",
-                                "The request improperly exposes the following OAUTHv2 authorization code "
+                                "The request improperly exposes the following OAUTHv2/OpenID authorization code "
                                 +"value on its URL query string: <b>"+codeValue+"</b>, then a threat agent could be able retrieve it and "
                                 +"potentially gain access to private resources of victim users.",
                                 "Medium",
