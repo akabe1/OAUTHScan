@@ -1001,7 +1001,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                     +"in order to provide a security mitigation against replay attacks.\n<br>"
                                     +"If there are not in place other anti-replay protections, then an attacker able to retrieve "
                                     +"a valid authorization request could replay it and potentially obtain access to other user resources.\n<br>"
-                                    +"Note: the Implicit Flow should be avoided in Mobile application contexts because is inerently insecure.\n<br>"
+                                    +"Note: the Implicit Flow should be avoided in Mobile application contexts because is inherently insecure.\n<br>"
                                     +"<br>References:<br>"
                                     +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#ImplicitAuthRequest\">https://openid.net/specs/openid-connect-core-1_0.html#ImplicitAuthRequest</a><br>"
                                     +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes\">https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes</a>",
@@ -1022,7 +1022,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                         helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                         new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
                                         "OpenID Implicit Flow Insecure Implementation Detected",
-                                        "This OpenID Implicit Flow implementation is inerently insecure, because allows the transmission of "
+                                        "This OpenID Implicit Flow implementation is inherently insecure, because allows the transmission of "
                                         +"secret tokens on the URL of HTTP GET requests (usually on URL fragment).\n<br>This behaviour is deprecated by OpenID specifications "
                                         +"because exposes the secret tokens to leakages (i.e. via cache, traffic sniffing, accesses from Javascript, etc.) and replay attacks.\n<br>"
                                         +"If the use of OpenID Implicit Flow is needed then is suggested to use the <code>request_mode</code> set to "
