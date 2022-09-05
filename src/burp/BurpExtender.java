@@ -1001,7 +1001,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                     +"in order to provide a security mitigation against replay attacks.\n<br>"
                                     +"If there are not in place other anti-replay protections, then an attacker able to retrieve "
                                     +"a valid authorization request could replay it and potentially obtain access to other user resources.\n<br>"
-                                    +"Note: the Implicit Flow should be avoided in Mobile application contexts because is inerently insecure.\n<br>"
+                                    +"Note: the Implicit Flow should be avoided in Mobile application contexts because is inherently insecure.\n<br>"
                                     +"<br>References:<br>"
                                     +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#ImplicitAuthRequest\">https://openid.net/specs/openid-connect-core-1_0.html#ImplicitAuthRequest</a><br>"
                                     +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes\">https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes</a>",
@@ -1022,7 +1022,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                         helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                         new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
                                         "OpenID Implicit Flow Insecure Implementation Detected",
-                                        "This OpenID Implicit Flow implementation is inerently insecure, because allows the transmission of "
+                                        "This OpenID Implicit Flow implementation is inherently insecure, because allows the transmission of "
                                         +"secret tokens on the URL of HTTP GET requests (usually on URL fragment).\n<br>This behaviour is deprecated by OpenID specifications "
                                         +"because exposes the secret tokens to leakages (i.e. via cache, traffic sniffing, accesses from Javascript, etc.) and replay attacks.\n<br>"
                                         +"If the use of OpenID Implicit Flow is needed then is suggested to use the <code>request_mode</code> set to "
@@ -1705,7 +1705,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
                                 "OAUTHv2 Implicit Flow Insecure Implementation Detected",
                                 "This is a login request of OAUTHv2 Implicit Flow, the <code>response_type</code> value is <b>"+helpers.urlDecode(respType)+"</b>.<br>"
-                                +"The OAUTHv2 Implicit Flow is considered inerently insecure because allows the transmission of "
+                                +"The OAUTHv2 Implicit Flow is considered inherently insecure because allows the transmission of "
                                 +"secret tokens in the URL of HTTP GET requests (usually on URL fragment).\n<br>This behaviour is deprecated by OAUTHv2 specifications "
                                 +"since it exposes the secret tokens to leakages (i.e. via cache, traffic sniffing, accesses from Javascript, etc.) and replay attacks.\n<br>"
                                 +"It is suggested to adopt OAUTHv2 Authorization Code Flow, or "
@@ -3632,8 +3632,8 @@ class CustomScanIssue implements IScanIssue
 	{
         return "OAUTHv2 is an open standard that allows applications to get access to protected "
         +"resources and APIs on behalf of users without accessing their credentials.\n "
-        +"OAUTHv2 defines overarching schemas for granting authorization but does not describes how "
-        +"to actually perform authentication.\nOpenID instead is an OAUTHv2 extension which striclty defines some "
+        +"OAUTHv2 defines overarching schemas for granting authorization but does not describe how "
+        +"to actually perform authentication.\nOpenID instead is an OAUTHv2 extension which strictly defines some "
         +"authentication patterns to grant access to users by authenticating them through another service "
         +"or provider.\n "
         +"There are many different ways to implement OAUTHv2 and OpenID login procedures. They are widely "
@@ -3670,7 +3670,7 @@ class CustomScanIssue implements IScanIssue
         +"the scope for which the token was originally granted.</li>"
         +"<li>If using OAUTHv2 (or OpenID) Authorization Code Flow make sure to invalidate "
         +"each authorization code after its first use at the Resource-Server endpoint. In addition "
-        +"attackers that retrieve unused authorizaton codes (stealed or brute-forced) could be able "
+        +"attackers that retrieve unused authorization codes (stolen or brute-forced) could be able "
         +"to use them regardless of how long ago they were issued. To mitigate this potential issue, "
         +"unused authorization codes should expire after 10-15 minutes.</li></ul>\n<br> "
         +"For OAUTHv2/OpenID Client-Applications:\n"
