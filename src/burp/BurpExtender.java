@@ -1722,7 +1722,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
 
                         // Checking for Refresh token included in login response (Location header or body) that is discouraged for Implicit Flow
                         foundRefresh = false;
-                        if (respBody.toLowerCase().contains("refresh")) {
+                        if (!respBody.isEmpty() && respBody.toLowerCase().contains("refresh")) {
                                 foundRefresh = true;
                         } else if (getHttpHeaderValueFromList(respHeaders, "Location")!=null) {
                             if (getHttpHeaderValueFromList(respHeaders, "Location").toLowerCase().contains("refresh")) {
@@ -2056,7 +2056,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                     } else if (grantType.equals("client_credentials")) {
                         // Checking if Refresh token is released in login response (Location header or body) that is discouraged for Client Credentials Flow
                         foundRefresh = false;
-                        if (respBody.toLowerCase().contains("refresh")) {
+                        if (!respBody.isEmpty() && respBody.toLowerCase().contains("refresh")) {
                                 foundRefresh = true;
                         } else if (getHttpHeaderValueFromList(respHeaders, "Location")!=null) {
                             if (getHttpHeaderValueFromList(respHeaders, "Location").toLowerCase().contains("refresh")) {
@@ -2070,12 +2070,12 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                     helpers.analyzeRequest(baseRequestResponse).getUrl(),
                                     new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
                                     "OAUTHv2 Client Credentials Flow Improper Release of Refresh Token",
-                                    "The Resource Server releases a refresh token after sucessful Client Credentials Flow login, "
-                                    +"this practice is discouraged by OAUTHv2 specifications.\n<br>"
+                                    "The Resource Server seems releasing a refresh token (in Location header or response body) after a successful "
+                                    +"Client Credentials Flow login, this practice is discouraged by OAUTHv2 specifications.\n<br>"
                                     +"<br>References:<br>"
                                     +"<a href=\"https://datatracker.ietf.org/doc/html/rfc6749#section-4.4.3\">https://datatracker.ietf.org/doc/html/rfc6749#section-4.4.3</a>",
                                     "Low",
-                                    "Certain"
+                                    "Tentative"
                                 )
                             );                           
                         } else {
