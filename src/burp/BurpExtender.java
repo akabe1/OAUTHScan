@@ -961,7 +961,54 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                     );
                 }
 
-                // Checks for all OpenID Flows login requests
+                // Checking for OpenID Token Exchange or JWT Bearer Flows
+                if (reqParam!=null & grantParameter!=null) {
+                    // First retrieves the grant_type parameter from request body
+                    String grantType = "";
+                    for (IParameter param: reqParam) {
+                        if (param.getType() == IParameter.PARAM_BODY) {
+                            if (param.getName().equals("grant_type")) {
+                                grantType = param.getValue();
+                            }
+                        }
+                    }
+
+                    // Checking for OpenID Token Exchange Flow
+                    if (helpers.urlDecode(grantType).equals("urn:ietf:params:oauth:grant-type:token-exchange")) {
+                        // Found OpenID Token Exchange Flow
+                        issues.add(
+                            new CustomScanIssue(
+                                baseRequestResponse.getHttpService(),
+                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                "OpenID Token Exchange Flow Detected",
+                                "This is a OpenID Token Exchange Flow (RFC 8693) login request, the <code>grant_type</code> value is <b>"+helpers.urlDecode(grantType)+"</b>.\n<br>"
+                                +"Note: the Token Exchange specification does not require client authentication and even client identification at the token endpoint, "
+                                +"in that cases it should be implemented only on closed network within a service.",
+                                "Information",
+                                "Certain"
+                            )
+                        );
+                    // Checking for OpenID JWT Bearer Flow
+                    } else if (helpers.urlDecode(grantType).equals("urn:ietf:params:oauth:grant-type:jwt-bearer")) {
+                        // Found OpenID JWT Bearer Flow
+                        issues.add(
+                            new CustomScanIssue(
+                                baseRequestResponse.getHttpService(),
+                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                "OpenID JWT Bearer Flow Detected",
+                                "This is a OpenID JWT Bearer Flow (RFC 7523) login request, the <code>grant_type</code> value is <b>"+helpers.urlDecode(grantType)+"</b>.\n<br>",
+                                "Information",
+                                "Certain"
+                            )
+                        ); 
+                    }
+                }
+                
+
+
+                // Checks for OpenID Flows login requests
                 if ( ((reqQueryParam!=null & reqQueryParam.containsKey("client_id") & reqQueryParam.containsKey("response_type")) || 
                 ( reqParam!=null & (clientidParameter != null) & (resptypeParameter!=null))) ) {
                     stdout.println("[+] Passive Scan: OpenID Flow detected");
@@ -1036,9 +1083,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                         "Certain"
                                     )
                                 );
-                            } else {
-
-                            }
+                            } 
                         }
 
 
@@ -2022,7 +2067,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                         }
                     } 
                 
-                // Then search for OAUTHv2 Resource Owner Password Credentials or Client Credentials Flows
+                // Then search for other OAUTHv2 flows (i.e. Resource Owner Password Credentials, or Client Credentials Flows) 
                 } else if (reqParam!=null & grantParameter != null) {
                     stdout.println("[+] Passive Scan: OAUTHv2 Resource Owner Password Credentials or Client Credentials Flows detected");
                     // First retrieves the grant_type parameter from request body
@@ -2093,6 +2138,36 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 )
                             );
                         }
+                    // Checking for OAUTHv2 Token Exchange Flow
+                    } else if (helpers.urlDecode(grantType).equals("urn:ietf:params:oauth:grant-type:token-exchange")) {
+                        // Found OAUTHv2 Token Exchange Flow
+                        issues.add(
+                            new CustomScanIssue(
+                                baseRequestResponse.getHttpService(),
+                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                "OAUTHv2 Token Exchange Flow Detected",
+                                "This is a Token Exchange Flow (RFC 8693) login request, the <code>grant_type</code> value is <b>"+helpers.urlDecode(grantType)+"</b>.\n<br>"
+                                +"Note: the Token Exchange specification does not require client authentication and even client identification at the token endpoint, "
+                                +"in that cases it should be implemented only on closed network within a service.",
+                                "Information",
+                                "Certain"
+                            )
+                        );
+                    // Checking for OAUTHv2 JWT Bearer Flow
+                    } else if (helpers.urlDecode(grantType).equals("urn:ietf:params:oauth:grant-type:jwt-bearer")) {
+                        // Found OAUTHv2 JWT Bearer Flow
+                        issues.add(
+                            new CustomScanIssue(
+                                baseRequestResponse.getHttpService(),
+                                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
+                                "OAUTHv2 JWT Bearer Flow Detected",
+                                "This is a JWT Bearer Flow (RFC 7523) login request, the <code>grant_type</code> value is <b>"+helpers.urlDecode(grantType)+"</b>.\n<br>",
+                                "Information",
+                                "Certain"
+                            )
+                        ); 
                     }
                 }
             }
