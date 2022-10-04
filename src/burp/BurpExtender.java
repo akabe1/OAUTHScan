@@ -431,11 +431,12 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
         List<String> matches = new ArrayList<String>();
         Pattern pattern = null;
         String data_lower;
+        int minLength = 4;
         if (data!=null) {
             // Case insensitive search
             paramName = paramName.toLowerCase();
             toSearch = toSearch.toLowerCase();
-            data_lower = data.toLowerCase();
+            data_lower = data.toLowerCase();          
             if (data_lower.contains(toSearch)) {
                 if (mimeType == null) {
                     // Parameter in response without a Content-Type
@@ -452,6 +453,8 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                 } else if (mimeType == "link") {
                     // Parameter in url of HTML link tag like "<a href=" or "<meta http-equiv=refresh content='3;url="
                     pattern = Pattern.compile("[&\\?]?" + paramName + "=([A-Za-z0-9\\-_\\.~\\+/]+)[&]?");
+                    pattern = Pattern.compile("<[\\w]+ [&\\?]?" + paramName + "=([A-Za-z0-9\\-_\\.~\\+/]+)[&]?");
+
                 } else {
                     // Parameter in text/html body
                     if (data.contains("location.href") || data.contains("location.replace") || data.contains("location.assign")) {
@@ -470,7 +473,10 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                 while(matcher.find()) {
                     int start = matcher.start(1);
                     int end = matcher.end(1);
-                    matches.add(data.substring(start, end));
+                    // Discard codes too short (probable false matching codes)
+                    if (end-start >= minLength) {
+                        matches.add(data.substring(start, end));
+                    }
                 }
             } 
         }
@@ -675,17 +681,17 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 for (String fToken : foundTokens) {
                                     if (fToken.length()<6) {
                                         // Found a weak secret token
-                                        List<int[]> requestHighlights = new ArrayList<>(1);
+                                        List<int[]> responseHighlights = new ArrayList<>(1);
                                         int[] tokenOffset = new int[2];
-                                        int tokenStart = requestString.indexOf(fToken);
+                                        int tokenStart = responseString.indexOf(fToken);
                                         tokenOffset[0] = tokenStart;
                                         tokenOffset[1] = tokenStart+fToken.length();
-                                        requestHighlights.add(tokenOffset);
+                                        responseHighlights.add(tokenOffset);
                                         issues.add(
                                             new CustomScanIssue(
                                                 baseRequestResponse.getHttpService(),
                                                 helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                                new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, responseHighlights) },
                                                 "OpenID Weak Secret Token Value Detected",
                                                 "The OpenID Flow presents a security misconfiguration, the Authorization Server releases weak secret token values "
                                                 +"(insufficient entropy) during OpenID login procedure.\n<br>"
@@ -827,17 +833,17 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                             for (String fToken : foundIdTokens) {
                                 if (fToken.length()<6) {
                                     // Found a weak id_token
-                                    List<int[]> requestHighlights = new ArrayList<>(1);
+                                    List<int[]> responseHighlights = new ArrayList<>(1);
                                     int[] tokenOffset = new int[2];
-                                    int tokenStart = requestString.indexOf(fToken);
+                                    int tokenStart = responseString.indexOf(fToken);
                                     tokenOffset[0] = tokenStart;
                                     tokenOffset[1] = tokenStart+fToken.length();
-                                    requestHighlights.add(tokenOffset);
+                                    responseHighlights.add(tokenOffset);
                                     issues.add(
                                         new CustomScanIssue(
                                             baseRequestResponse.getHttpService(),
                                             helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                            new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, responseHighlights) },
                                             "OpenID Improper ID_Token Value Detected",
                                             "The OpenID Flow presents a security misconfiguration, the Authorization Server releases improper <code>id_token</code> values "
                                             +"(not a JWT) during login procedure.\n<br>"
@@ -1150,17 +1156,17 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                         for (String fCode : foundCodes) {
                                             if (fCode.length()<6) {
                                                 // Found a weak code
-                                                List<int[]> requestHighlights = new ArrayList<>(1);
+                                                List<int[]> responseHighlights = new ArrayList<>(1);
                                                 int[] tokenOffset = new int[2];
-                                                int tokenStart = requestString.indexOf(fCode);
+                                                int tokenStart = responseString.indexOf(fCode);
                                                 tokenOffset[0] = tokenStart;
                                                 tokenOffset[1] = tokenStart+fCode.length();
-                                                requestHighlights.add(tokenOffset);
+                                                responseHighlights.add(tokenOffset);
                                                 issues.add(
                                                     new CustomScanIssue(
                                                         baseRequestResponse.getHttpService(),
                                                         helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, responseHighlights) },
                                                         "OpenID Weak Authorization Code Value Detected",
                                                         "The OpenID Hybrid Flow presents a security misconfiguration, the Authorization Server releases weak <code>code</code> values "
                                                         +"(insufficient entropy) during the login procedure.\n<br>"
@@ -1440,17 +1446,17 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                         for (String fCode : foundCodes) {
                                             if (fCode.length()<6) {
                                                 // Found a weak code
-                                                List<int[]> requestHighlights = new ArrayList<>(1);
+                                                List<int[]> responseHighlights = new ArrayList<>(1);
                                                 int[] tokenOffset = new int[2];
-                                                int tokenStart = requestString.indexOf(fCode);
+                                                int tokenStart = responseString.indexOf(fCode);
                                                 tokenOffset[0] = tokenStart;
                                                 tokenOffset[1] = tokenStart+fCode.length();
-                                                requestHighlights.add(tokenOffset);
+                                                responseHighlights.add(tokenOffset);
                                                 issues.add(
                                                     new CustomScanIssue(
                                                         baseRequestResponse.getHttpService(),
                                                         helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, responseHighlights) },
                                                         "OpenID Weak Authorization Code Value Detected",
                                                         "The OpenID Authorization Code Flow presents a security misconfiguration, the Authorization Server releases weak <code>code</code> values "
                                                         +"(insufficient entropy) during OpenID login procedure.\n<br>"
@@ -1870,17 +1876,17 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                         for (String fCode : foundCodes) {
                                             if (fCode.length()<6) {
                                                 // Found a weak code
-                                                List<int[]> requestHighlights = new ArrayList<>(1);
+                                                List<int[]> responseHighlights = new ArrayList<>(1);
                                                 int[] tokenOffset = new int[2];
-                                                int tokenStart = requestString.indexOf(fCode);
+                                                int tokenStart = responseString.indexOf(fCode);
                                                 tokenOffset[0] = tokenStart;
                                                 tokenOffset[1] = tokenStart+fCode.length();
-                                                requestHighlights.add(tokenOffset);
+                                                responseHighlights.add(tokenOffset);
                                                 issues.add(
                                                     new CustomScanIssue(
                                                         baseRequestResponse.getHttpService(),
                                                         helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, requestHighlights, null) },
+                                                        new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, responseHighlights) },
                                                         "OAUTHv2 Weak Authorization Code Value Detected",
                                                         "The OAUTHv2 Authorization Code Flow presents a security misconfiguration, the Authorization Server releases weak <code>code</code> values "
                                                         +"(insufficient entropy) during the login procedure.\n<br>"
