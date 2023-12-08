@@ -42,6 +42,11 @@ Finally use the Burp GUI Extender tab to import the generated 'OAUTHscan-all-X.Y
 OAUTHScan is fully integrated with the Burp Scanner, after installed on Burp you have only to launch Passive or Active scans on your targeted request.
 
 
+# Note
+The checks on this Burp plugin have been implemented following the RFCs of OAUTHv2 and OpenID. 
+This could produce false positives when used to test applications having custom implementations of these standards.
+
+
 # Author
 - OAUTHScan plugin was developed by Maurizio Siddu
 
