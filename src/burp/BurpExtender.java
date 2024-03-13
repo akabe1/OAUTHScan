@@ -1036,7 +1036,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
                                 "OpenID Implicit Flow Detected",
                                 "This is a login request of OpenID Implicit Flow, the <code>response_type</code> value is <b>"+helpers.urlDecode(respType)+"</b>.\n<br>"
-                                +"Note: OpenID Implicit Flow should be avoided in Mobile application contexts because considered insecure.",
+                                +"The OpenID Implicit Flow should be avoided in Mobile and SPA application contexts because considered insecure.",
                                 "Information",
                                 "Certain"
                             )
@@ -1054,7 +1054,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                     +"in order to provide a security mitigation against replay attacks.\n<br>"
                                     +"If there are not in place other anti-replay protections, then an attacker able to retrieve "
                                     +"a valid authorization request could replay it and potentially obtain access to other user resources.\n<br>"
-                                    +"Note: the Implicit Flow should be avoided in Mobile application contexts because is inherently insecure.\n<br>"
+                                    +"The Implicit Flow should be avoided in Mobile and SPA application contexts because is inherently insecure.\n<br>"
                                     +"<br>References:<br>"
                                     +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#ImplicitAuthRequest\">https://openid.net/specs/openid-connect-core-1_0.html#ImplicitAuthRequest</a><br>"
                                     +"<a href=\"https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes\">https://openid.net/specs/openid-connect-core-1_0.html#NonceNotes</a>",
@@ -1082,7 +1082,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                         +"<b>form_post</b> which force to send access tokens in the body of HTTP POST requests, or to"
                                         +"adopt the OpenID Implicit Flow which uses only the ID_Token (not exposing access tokens) "
                                         +"by setting <code>response_type</code> parameter to <b>id_token</b>.\n<br>"
-                                        +"Note: the use of Implicit Flow is also considered insecure in Mobile application contexts.\n<br>"
+                                        +"The use of Implicit Flow is also considered insecure in Mobile and SPA application contexts.\n<br>"
                                         +"<br>References:<br>"
                                         +"<a href=\"https://openid.net/specs/oauth-v2-form-post-response-mode-1_0.html\">https://openid.net/specs/oauth-v2-form-post-response-mode-1_0.html</a>",
                                         "Medium",
@@ -1761,7 +1761,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 +"since it exposes the secret tokens to leakages (i.e. via cache, traffic sniffing, accesses from Javascript, etc.) and replay attacks.\n<br>"
                                 +"It is suggested to adopt OAUTHv2 Authorization Code Flow, or "
                                 +"any of the specific OpenID Implicyt Flow implementations (as <b>id_token</b> or <b>form_post</b>).\n<br>"
-                                +"Note: the use of Implicit Flow is also considered insecure in Mobile application contexts.\n<br>"
+                                +"The use of Implicit Flow is also considered insecure in Mobile and SPA application contexts.\n<br>"
                                 +"<br>References:<br>"
                                 +"<a href=\"https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics-09#page-5\">https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics-09#page-5</a><br>"
                                 +"<a href=\"https://tools.ietf.org/id/draft-parecki-oauth-browser-based-apps-02.txt\">https://tools.ietf.org/id/draft-parecki-oauth-browser-based-apps-02.txt</a>",
@@ -2041,7 +2041,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                     +"then there is not any PKCE protection against authorization code interception.\n<br>"
                                     +"The OAUTHv2 Authorization Code Flow with PKCE provides protection against authorization code interception attacks, "
                                     +"and is a security requirement on Mobile contexts.\n<br>"
-                                    +"In Mobile, Native desktop and SPA contexts the use of OAUTHv2 Authorization Code Flow with PKCE extension is a security requirement..\n<br>"
+                                    +"In Mobile, Native desktop and SPA contexts the use of OAUTHv2 Authorization Code Flow with PKCE extension is a security requirement.\n<br>"
                                     +"<br>References:<br>"
                                     +"<a href=\"https://datatracker.ietf.org/doc/html/rfc7636\">https://datatracker.ietf.org/doc/html/rfc7636</a>",
                                     "Medium",
@@ -2096,8 +2096,9 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 new IHttpRequestResponse[] { callbacks.applyMarkers(baseRequestResponse, null, null) },
                                 "OAUTHv2 Resource Owner Password Credentials Flow Detected",
                                 "This is a Resource Owner Password Credentials Flow login request, the <code>grant_type</code> value is <b>"+helpers.urlDecode(grantType)+"</b>.\n<br>"
-                                +"Note: in Mobile application contexts the Resource Owner Password Credentials Flow should be implemented "
-                                +"only when both Client Application and Authorization Server belong to the same provider.",
+                                +"In Mobile and SPA application contexts the Resource Owner Password Credentials Flow should be avoided."
+                                +"It is possible to use it on legacy Web applications only for migration reasons when both Client Application and Authorization Server "
+                                +"belong to the same provider.",
                                 "Information",
                                 "Certain"
                             )
@@ -3777,12 +3778,16 @@ class CustomScanIssue implements IScanIssue
         +"It is discouraged to store tokens on browsers local storage, because they will be "
         +"accessible by Javascript (XSS)</li><li>If possible use short lived access tokens "
         +"(i.e. expiration 30 minutes), and also enable refresh token rotation (eg. expiration 2 hours).</li>"
+        +"<li>The OAUTHv2 Resource Owner Password Credentials Flow is insecure and considered deprecated "
+        +"by specifications, and it should be replaced by OAUTHv2 Authorization Code Flow (PKCE). "
+        +"This OAuthv2 flow was introduced only for legacy Web applications for migration reasons, and "
+        +"in particular it must be avoided in Mobile and SPA application contexts.</li>"
         +"<li>The OAUTHv2 Implicit Flow is insecure and considered deprecated by specifications, "
         +"avoid to use it and instead adopt OAUTHv2 Authorization Code Flow. "
         +"At the same times, developers should be careful when implementing OpenID Implicit Flow "
         +"because when not properly configured it could be vulnerable to access token leakage and "
-        +"access token replay. Also avoid to use any Implicit Flow (OAUTHv2 and OpenID) in Mobile "
-        +"application contexts.</li></ul>\n<br><br>"
+        +"access token replay. In particular avoid to use any Implicit Flow (OAUTHv2 and OpenID) "
+        +"in Mobile and SPA application contexts.</li></ul>\n<br><br>"
         +"<b>References:</b><br><ul>"
         +"<li><a href=\"https://datatracker.ietf.org/doc/html/rfc6749\">https://datatracker.ietf.org/doc/html/rfc6749</a></li>"
         +"<li><a href=\"https://datatracker.ietf.org/doc/html/rfc6819\">https://datatracker.ietf.org/doc/html/rfc6819</a></li>"
