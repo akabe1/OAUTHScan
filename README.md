@@ -45,6 +45,7 @@ OAUTHScan is fully integrated with the Burp Scanner, after installed on Burp you
 # Note
 The checks on this Burp plugin have been implemented following the RFCs of OAUTHv2 and OpenID. 
 This could produce false positives when used to test applications having custom implementations of these standards.
+This plugin may be more up-to-date than the one in Portswigger repository.
 
 
 # Author
