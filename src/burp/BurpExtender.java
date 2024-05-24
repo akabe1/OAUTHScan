@@ -2329,8 +2329,9 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, IScannerInser
                                 "OAUTHv2/OpenID Leakage of Authorization Code in URL Query",
                                 "The request improperly exposes the following OAUTHv2/OpenID authorization code "
                                 +"value on its URL query string: <b>"+codeValue+"</b>, then a threat agent could be able retrieve it and "
-                                +"potentially gain access to private resources of victim users.",
-                                "Medium",
+                                +"potentially gain access to private resources of victim users. Since this is the expected behavior " 
+				+"for Authorization Code Flow, to avoid this issue it is needed to employ the PKCE extension of the standard",
+                                "Low",
                                 "Firm"
                             )
                         );
