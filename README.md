@@ -41,7 +41,8 @@ Then you could build it:
     the "elephant icon" of Gradle in the left vertical panel, so on 
     the "gradle projects" section click on "OauthScan" -> "Tasks" -> 
     "build". To build the project you have to click on the right arrow 
-    of the "build" sub-option. 
+    of the "build" sub-option.
+
 Finally use the Burp GUI Extender tab to import the generated 'OAUTHscan-X.Y.jar' file located on "build/libs/" project folder.
 In alternative you could add OAUTHScan plugin directly from the official Burpsuite BApp-Store (Note: it could be not up-to-date).
 
